@@ -22,7 +22,7 @@ struct LoRaRuntimeCfg {
 static const char _WC_HTML[] PROGMEM = R"==(
 <!DOCTYPE html><html lang="id"><head><meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>LoRa Config</title><style>
+<title>LoRa Node Status</title><style>
 *{margin:0;padding:0;box-sizing:border-box}
 body{background:#0f0f1a;color:#e2e8f0;font-family:'Segoe UI',sans-serif;
   min-height:100vh;display:flex;align-items:center;justify-content:center;padding:16px}
@@ -33,53 +33,26 @@ h1{text-align:center;font-size:1.3em;margin-bottom:4px;
   background:linear-gradient(135deg,#667eea,#764ba2);
   -webkit-background-clip:text;-webkit-text-fill-color:transparent}
 .sub{text-align:center;color:#718096;font-size:.82em;margin-bottom:16px}
+.badge{display:inline-block;padding:4px 12px;background:rgba(102,126,234,0.2);
+  border:1px solid #667eea;color:#667eea;border-radius:20px;font-size:0.7em;
+  font-weight:600;margin-bottom:15px;text-transform:uppercase;letter-spacing:1px}
 .inf{background:rgba(102,126,234,.12);border:1px solid rgba(102,126,234,.3);
-  border-radius:8px;padding:11px;margin-bottom:16px;font-size:.82em;line-height:2}
-.inf b{color:#667eea}
-.fld{margin-bottom:13px}
-label{display:block;color:#a0aec0;font-size:.78em;margin-bottom:5px;
-  text-transform:uppercase;letter-spacing:.07em}
-select{width:100%;padding:9px 12px;background:#0f1a33;color:#e2e8f0;
-  border:1px solid #2d4a7a;border-radius:8px;font-size:.9em;outline:none}
-select:focus{border-color:#667eea}
-.note{color:#4a5568;font-size:.74em;margin-top:3px}
-.btn{width:100%;padding:13px;
-  background:linear-gradient(135deg,#667eea,#764ba2);
-  color:#fff;border:none;border-radius:10px;font-size:.96em;
-  font-weight:600;cursor:pointer;margin-top:8px;letter-spacing:.03em}
-.btn:active{opacity:.8}
-.tmr{background:#1a1a2e;border-radius:8px;padding:8px;text-align:center;
-  margin-top:14px;font-size:.8em;color:#90cdf4}
-</style></head><body><div class="card">
-<h1>LoRa Parameter Config</h1>
-<div class="sub">%%NODE%% - Ubah SF / BW saja untuk pengujian</div>
-<div class="inf">
-  <b>SF</b> %%SF%% &nbsp;<b>BW</b> %%BW%% kHz &nbsp;
-  <b>CR</b> tetap 4/%%CR%% &nbsp;<b>PWR</b> tetap %%PWR%% dBm
+  border-radius:8px;padding:15px;margin-bottom:16px;font-size:.9em;line-height:2.2}
+.inf b{color:#667eea;display:inline-block;width:100px}
+.tmr{background:#1a1a2e;border-radius:8px;padding:10px;text-align:center;
+  margin-top:14px;font-size:.8em;color:#90cdf4;border:1px dashed #2d4a7a}
+</style></head><body><div class="card" style="text-align:center">
+<div class="badge">View Only Mode</div>
+<h1>LoRa Node Status</h1>
+<div class="sub">%%NODE%%</div>
+<div class="inf" style="text-align:left">
+  <b>ID Node</b> : %%NODE_ID%%<br>
+  <b>SF</b> : SF%%SF%%<br>
+  <b>Bandwidth</b> : %%BW%% kHz<br>
+  <b>Coding Rate</b> : 4/%%CR%%<br>
+  <b>TX Power</b> : %%PWR%% dBm<br>
 </div>
-<form action="/save" method="POST">
-<div class="fld">
-  <label>Spreading Factor (SF)</label>
-  <select name="sf">
-    <option value="7" %%S7%%>SF7 - Rate tinggi, jarak dekat</option>
-    <option value="8" %%S8%%>SF8</option>
-    <option value="9" %%S9%%>SF9 - Seimbang</option>
-    <option value="10" %%S10%%>SF10</option>
-    <option value="11" %%S11%%>SF11</option>
-    <option value="12" %%S12%%>SF12 - Jarak jauh, rate rendah</option>
-  </select>
-  <div class="note">Skenario pengujian: pilih SF sesuai variasi yang diuji.</div>
-</div>
-<div class="fld">
-  <label>Bandwidth (BW)</label>
-  <select name="bw">
-    <option value="125" %%B125%%>125 kHz - Jangkauan maksimal</option>
-    <option value="250" %%B250%%>250 kHz - Seimbang</option>
-  </select>
-</div>
-<button type="submit" class="btn">Simpan &amp; Reboot ESP32</button>
-</form>
-<div class="tmr">SSID config aktif terus dan bisa diakses tanpa password.</div>
+<div class="tmr">Konfigurasi dikunci. Gunakan fitur <b>START_TEST</b> di Gateway untuk mengubah parameter secara massal.</div>
 </div></body></html>
 )==";
 
@@ -100,6 +73,7 @@ namespace WebConfig {
 static WebServer*     _srv    = nullptr;
 static Preferences    _prefs;
 static LoRaRuntimeCfg _cfg;
+static uint8_t        _myNodeID = 0;
 static bool           _active = false;
 static bool           _reboot = false;
 static String         _nodeName;
@@ -138,19 +112,25 @@ void resetConfig() {
     Serial.println("[WebConfig] NVRAM direset ke default.");
 }
 
+// Simpan SF/BW dari START_TEST broadcast ke NVRAM (dipanggil sebelum reboot)
+void saveTestConfig(uint8_t sf, uint32_t bwKHz) {
+    sf = constrain(sf, 7, 12);
+    bwKHz = (bwKHz == 250) ? 250 : 125;
+    _prefs.begin("lora-cfg", false);
+    _prefs.putUChar("sf", sf);
+    _prefs.putUInt("bw", bwKHz);
+    _prefs.end();
+    Serial.printf("[WebConfig] START_TEST saved: SF=%d BW=%lukHz\n", sf, (unsigned long)bwKHz);
+}
+
 static String _buildPage() {
     String s = String(_WC_HTML);
     s.replace("%%NODE%%", _nodeName);
+    s.replace("%%NODE_ID%%", String(_myNodeID));
     s.replace("%%SF%%", String(_cfg.sf));
     s.replace("%%BW%%", String(_cfg.bwKHz));
     s.replace("%%CR%%", String(_cfg.cr));
     while (s.indexOf("%%PWR%%") != -1) s.replace("%%PWR%%", String(_cfg.txPower));
-
-    for (int i = 7; i <= 12; i++) {
-        s.replace("%%S" + String(i) + "%%", _cfg.sf == i ? "selected" : "");
-    }
-    s.replace("%%B125%%", _cfg.bwKHz == 125 ? "selected" : "");
-    s.replace("%%B250%%", _cfg.bwKHz == 250 ? "selected" : "");
     return s;
 }
 
@@ -158,31 +138,16 @@ static void _onRoot() {
     _srv->send(200, "text/html; charset=UTF-8", _buildPage());
 }
 
+// Handler /save dinonaktifkan di mode View-Only
 static void _onSave() {
-    if (_srv->hasArg("sf")) _cfg.sf = _srv->arg("sf").toInt();
-    if (_srv->hasArg("bw")) _cfg.bwKHz = _srv->arg("bw").toInt();
-
-    _cfg.sf = constrain(_cfg.sf, 7, 12);
-    _cfg.bwKHz = (_cfg.bwKHz == 250) ? 250 : 125;
-
-    _prefs.begin("lora-cfg", false);
-    _prefs.putUChar("sf", _cfg.sf);
-    _prefs.putUInt("bw", _cfg.bwKHz);
-    _prefs.remove("cr");
-    _prefs.remove("txpwr");
-    _prefs.remove("ufo");
-    _prefs.end();
-
-    Serial.printf("[WebConfig] TERSIMPAN: SF=%d BW=%dkHz | CR tetap 4/%d | Pwr tetap %ddBm\n",
-                  _cfg.sf, _cfg.bwKHz, _cfg.cr, _cfg.txPower);
-    _srv->send(200, "text/html; charset=UTF-8", _WC_SAVED);
-    _reboot = true;
+    _srv->send(403, "text/plain", "Konfigurasi dikunci. Gunakan Gateway.");
 }
 
 // Mulai WiFi AP + Web Server
-void begin(const char* nodeNameStr, const LoRaRuntimeCfg& currentCfg) {
+void begin(const char* nodeNameStr, const LoRaRuntimeCfg& currentCfg, uint8_t id) {
     _nodeName = String(nodeNameStr);
     _cfg = currentCfg;
+    _myNodeID = id;
     _reboot = false;
 
     String ssid = "LoRa-CFG-" + _nodeName;

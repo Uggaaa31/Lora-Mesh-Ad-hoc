@@ -143,6 +143,18 @@ float projectAccelToHeading(float heading, float ax, float ay) {
     return clampf(accelForward, -MAX_ACCEL_USED, MAX_ACCEL_USED);
 }
 
+void sendDiagnosticCallback(const DiscoveryDiagPayload& diag) {
+    if (!aodv.hasRouteTo(GATEWAY_ID)) return;
+    static uint32_t diagSeq = 0;
+    LoRaPacket pkt = LoRaPacketHandler::createDiagnosticPacket(
+        NODE_ID, GATEWAY_ID, diag, ++diagSeq);
+    pkt.header.nextHop = aodv.getNextHop(GATEWAY_ID);
+    pkt.header.checksum = LoRaPacketHandler::calculateChecksum(pkt);
+    sendPacketCallback(pkt);
+    Serial.printf("[DIAG TX] target=%u discovery=%lums hops=%u success=%u\n",
+                  diag.targetNodeId, (unsigned long)diag.discoveryMs,
+                  diag.hopCount, diag.success);
+}
 void setup() {
     Serial.begin(SERIAL_BAUD);
     delay(1000);
@@ -169,7 +181,7 @@ void setup() {
                   runtimeCfg.cr,
                   runtimeCfg.txPower);
 
-    WebConfig::begin(NODE_NAME, runtimeCfg);
+    WebConfig::begin(NODE_NAME, runtimeCfg, NODE_ID);
     initLoRa();
     initGPS();
 
@@ -183,11 +195,19 @@ void setup() {
 
     aodv.begin();
     aodv.onSendPacket = sendPacketCallback;
+    aodv.onDiagnosticReady = sendDiagnosticCallback;
+    aodv.epochOffsetPtr = &epochOffsetMsLow32;
 
     lastMillis = millis();
     Serial.println("[NODE] Setup complete");
     Serial.println("Ketik RESET di Serial untuk reset config NVRAM.");
 }
+
+// ================================================================
+// MAIN LOOP — Interval Tetap 3 Detik + Offset Per Node
+// ================================================================
+unsigned long lastSendTime = 0;
+bool initialOffsetDone = false;
 
 void loop() {
     unsigned long nowMs = millis();
@@ -197,9 +217,19 @@ void loop() {
     receivePackets();
     updateTelemetry(nowMs);
 
-    if (nowMs - lastPublishMs >= (unsigned long)(DATA_SEND_INTERVAL + random(-1000, 1000))) {
-        lastPublishMs = nowMs;
-        sendSafetyCondition(nowMs);
+    // FIXED INTERVAL SCHEDULING (3 detik + offset NODE_ID * 500ms)
+    if (!initialOffsetDone) {
+        lastSendTime = nowMs - DATA_SEND_INTERVAL + (NODE_ID * 500UL);
+        initialOffsetDone = true;
+    }
+
+    if (nowMs - lastSendTime >= DATA_SEND_INTERVAL) {
+        bool ok = sendSafetyCondition(nowMs);
+        if (ok) {
+            lastSendTime = nowMs;
+            Serial.printf("[TX] Sent OK | SF=%d BW=%dkHz | interval=%dms\n",
+                          runtimeCfg.sf, runtimeCfg.bwKHz, DATA_SEND_INTERVAL);
+        }
     }
 
     if (nowMs - lastStatusPrintMs >= STATUS_PRINT_INTERVAL_MS) {
@@ -211,6 +241,9 @@ void loop() {
                       drActive ? "ON" : "OFF",
                       lastGpsValid ? "VALID" : "INVALID",
                       speedMps);
+        Serial.printf("[CONFIG] SF=%d BW=%dkHz Interval=%dms Offset=%dms\n",
+                      runtimeCfg.sf, runtimeCfg.bwKHz,
+                      DATA_SEND_INTERVAL, NODE_ID * 500);
         lastStatusPrintMs = nowMs;
     }
 
@@ -227,6 +260,7 @@ void loop() {
 
     delay(10);
 }
+
 
 void initLoRa() {
     Serial.println("[LoRa] Initializing");
@@ -429,6 +463,8 @@ bool sendSafetyCondition(unsigned long nowMs) {
         ? ((uint32_t)millis() + epochOffsetMsLow32)
         : (uint32_t)nowMs;
     payload.flags = 0;
+    payload.routeDiscMs = 0;
+    payload.routeHops = 0;
 
     if (lastGpsValid) {
         payload.flags |= FLAG_GPS_VALID;
@@ -449,6 +485,16 @@ bool sendSafetyCondition(unsigned long nowMs) {
         payload.flags |= FLAG_OVERSPEED;
     }
 
+    uint32_t lastDiscoveryMs = 0;
+    uint8_t lastDiscoveryHops = 0;
+    if (aodv.getLastSuccessfulDiscovery(GATEWAY_ID, lastDiscoveryMs, lastDiscoveryHops)) {
+        payload.routeDiscMs = lastDiscoveryMs;
+    }
+    payload.routeHops = aodv.getRouteHopCount(GATEWAY_ID);
+    if (payload.routeHops == 0) {
+        payload.routeHops = lastDiscoveryHops;
+    }
+
     LoRaPacket packet = LoRaPacketHandler::createSafetyConditionPacket(
         NODE_ID,
         GATEWAY_ID,
@@ -459,7 +505,7 @@ bool sendSafetyCondition(unsigned long nowMs) {
     packet.header.checksum = LoRaPacketHandler::calculateChecksum(packet);
 
     Serial.printf(
-        "[lora_nailah TX SAFETY flags] ts=%lu flags=0x%02X gpsValid=%u drActive=%u rolloverRisk=%u rollover=%u harshBraking=%u overspeed=%u\n",
+        "[lora_nailah TX SAFETY flags] ts=%lu flags=0x%02X gpsValid=%u drActive=%u rolloverRisk=%u rollover=%u harshBraking=%u overspeed=%u route_ms=%lu route_hops=%u\n",
         (unsigned long)payload.ts,
         payload.flags,
         lastGpsValid ? 1 : 0,
@@ -467,7 +513,9 @@ bool sendSafetyCondition(unsigned long nowMs) {
         isRolloverRisk ? 1 : 0,
         isRollover ? 1 : 0,
         isHarshBraking ? 1 : 0,
-        isOverspeed ? 1 : 0
+        isOverspeed ? 1 : 0,
+        (unsigned long)payload.routeDiscMs,
+        payload.routeHops
     );
 
     sendPacketCallback(packet);
@@ -495,33 +543,40 @@ void handleReceivedPacket(const LoRaPacket& packet) {
         return;
     }
 
-    switch (packet.header.packetType) {
+    // Duplicate detection for data packets
+    uint8_t ptype = packet.header.packetType;
+    static struct { uint8_t src; uint32_t seq; uint8_t type; unsigned long ts; bool valid; } _dupCache[32];
+    static uint8_t _dupIdx = 0;
+    if (ptype == PKT_TYPE_DATA || ptype == PKT_TYPE_FATIGUE_IMU ||
+        ptype == PKT_TYPE_SAFETY_CONDITION || ptype == PKT_TYPE_VEHICLE_TELEMETRY ||
+        ptype == PKT_TYPE_DIAGNOSTIC) {
+        unsigned long now = millis();
+        for (int i = 0; i < 32; i++) {
+            if (_dupCache[i].valid && _dupCache[i].src == packet.header.sourceID &&
+                _dupCache[i].seq == packet.header.sequenceNum &&
+                _dupCache[i].type == ptype && (now - _dupCache[i].ts) < 10000) return;
+        }
+        _dupCache[_dupIdx] = {packet.header.sourceID, packet.header.sequenceNum, ptype, now, true};
+        _dupIdx = (_dupIdx + 1) % 32;
+    }
+
+    switch (ptype) {
         case PKT_TYPE_DATA:
         case PKT_TYPE_FATIGUE_IMU:
         case PKT_TYPE_FATIGUE_STATUS:
         case PKT_TYPE_SAFETY_CONDITION:
         case PKT_TYPE_VEHICLE_TELEMETRY:
+        case PKT_TYPE_DIAGNOSTIC:
             if (packet.header.nextHop == NODE_ID &&
                 packet.header.destinationID != NODE_ID) {
                 forwardPacket(packet);
             }
             break;
 
-        case PKT_TYPE_RREQ:
-            aodv.handleRREQ(packet);
-            break;
-
-        case PKT_TYPE_RREP:
-            aodv.handleRREP(packet);
-            break;
-
-        case PKT_TYPE_RERR:
-            aodv.handleRERR(packet);
-            break;
-
-        case PKT_TYPE_HELLO:
-            aodv.handleHello(packet);
-            break;
+        case PKT_TYPE_RREQ:  aodv.handleRREQ(packet); break;
+        case PKT_TYPE_RREP:  aodv.handleRREP(packet); break;
+        case PKT_TYPE_RERR:  aodv.handleRERR(packet); break;
+        case PKT_TYPE_HELLO: aodv.handleHello(packet); break;
 
         case PKT_TYPE_TIMESYNC:
             if (packet.header.payloadLength == sizeof(TimeSyncPayload)) {
@@ -532,6 +587,17 @@ void handleReceivedPacket(const LoRaPacket& packet) {
                 timeSynced = true;
                 Serial.printf("[TIMESYNC] EpochLow32=%lu\n",
                               (unsigned long)epochOffsetMsLow32);
+            }
+            break;
+
+        case PKT_TYPE_START_TEST:
+            if (packet.header.payloadLength == sizeof(StartTestPayload)) {
+                StartTestPayload st;
+                memcpy(&st, packet.payload, sizeof(StartTestPayload));
+                Serial.printf("[START_TEST] SF=%u BW=%lukHz\n", st.sf, (unsigned long)st.bwKHz);
+                WebConfig::saveTestConfig(st.sf, st.bwKHz);
+                delay(2000);
+                ESP.restart();
             }
             break;
 

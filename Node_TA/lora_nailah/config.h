@@ -66,6 +66,8 @@
 #define PKT_TYPE_FATIGUE_STATUS     0x32 // Alarm/status command (Gateway -> Node)
 #define PKT_TYPE_SAFETY_CONDITION   0x41 // Safety condition flags (Node -> Gateway)
 #define PKT_TYPE_VEHICLE_TELEMETRY  0x09 // Legacy payload (unused on lora_nailah)
+#define PKT_TYPE_DIAGNOSTIC         0x0A // Route discovery diagnostic (Node -> Gateway)
+#define PKT_TYPE_START_TEST         0x0B // Start test command (Gateway -> Nodes, broadcast)
 
 // Safety condition bit flags
 #define FLAG_GPS_VALID      0x01
@@ -79,8 +81,8 @@
 // DATA COLLECTION PARAMETERS
 // ================================================================
 #define DATA_SEND_INTERVAL  3000      // 500 ms - lebih aman untuk LoRa mesh dan selaras dengan node fatigue
-#define GPS_UPDATE_INTERVAL 200      // 200 ms - parsing/update GPS local
-#define IMU_UPDATE_INTERVAL 200      // 200 ms - update sensor local
+#define GPS_UPDATE_INTERVAL 100      // 100 ms - update GPS data
+#define IMU_UPDATE_INTERVAL 100      // 100 ms - update sensor data
 #define STATUS_PRINT_INTERVAL_MS 60000UL
 
 // ================================================================
@@ -128,7 +130,7 @@
 #define GPS_ALT_RANGE       50.0     // Variance range
 
 // IMU Dummy - Accelerometer & Gyroscope ranges
-#define IMU_ACCEL_RANGE     2.0      // ±2g
-#define IMU_GYRO_RANGE      250.0    // ±250 deg/s
+#define IMU_ACCEL_RANGE     2.0      // Â±2g
+#define IMU_GYRO_RANGE      250.0    // Â±250 deg/s
 
 #endif // CONFIG_H

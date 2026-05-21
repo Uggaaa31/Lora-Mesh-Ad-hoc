@@ -33,7 +33,7 @@ $nodeChecks = @(
         Name = "lora_nailah"
         Sketch = "lora_nailah.ino"
         RequireFatigueStatusHandler = $false
-        RequireVehicleTelemetrySender = $true
+        RequireVehicleTelemetrySender = $false
     }
 )
 
@@ -82,8 +82,8 @@ $sketchPatterns = @(
 $packetPatterns = @(
     'createTimeSyncPacket',
     'case 0x06: return "TIMESYNC"',
-    'case 0x07: return "FATIGUE_IMU"',
-    'case 0x08: return "FATIGUE_STATUS"',
+    'case 0x31: return "FATIGUE_IMU"',
+    'case 0x32: return "FATIGUE_STATUS"',
     'case 0x09: return "VEHICLE_TELEMETRY"'
 )
 
@@ -147,7 +147,7 @@ foreach ($node in $nodeChecks) {
 
     if ($node.RequireFatigueStatusHandler) {
         Assert-Pattern -Content $sketchContent -Pattern 'applyAlarmStatusPayload' -Label "$($node.Name)\$($node.Sketch)"
-        Assert-Pattern -Content $sketchContent -Pattern 'createFatigueImuPacket' -Label "$($node.Name)\$($node.Sketch)"
+        Assert-Pattern -Content $sketchContent -Pattern 'createImuFatiguePacket' -Label "$($node.Name)\$($node.Sketch)"
     }
 
     if ($node.RequireVehicleTelemetrySender) {

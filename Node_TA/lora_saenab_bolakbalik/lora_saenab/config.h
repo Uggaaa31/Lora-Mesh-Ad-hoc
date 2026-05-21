@@ -66,14 +66,16 @@
 #define PKT_TYPE_FATIGUE_STATUS 0x32 // Alarm/status command (Gateway -> Node)
 #define PKT_TYPE_SAFETY_CONDITION 0x41 // Safety condition flags (Node -> Gateway)
 #define PKT_TYPE_VEHICLE_TELEMETRY 0x09 // Legacy payload forwarding compatibility
+#define PKT_TYPE_DIAGNOSTIC         0x0A // Route discovery diagnostic (Node -> Gateway)
+#define PKT_TYPE_START_TEST         0x0B // Start test command (Gateway -> Nodes, broadcast)
 
 // ================================================================
 // DATA COLLECTION PARAMETERS
 // Node custom lora_saenab mengirim data IMU fatigue setiap 500 ms
 // ================================================================
 #define DATA_SEND_INTERVAL  3000      // Referensi interval pengiriman data
-#define GPS_UPDATE_INTERVAL 1000     // Tidak dipakai di node custom ini
-#define IMU_UPDATE_INTERVAL 3000      // Referensi untuk IMU update interval
+#define GPS_UPDATE_INTERVAL 100      // 100 ms - update GPS data
+#define IMU_UPDATE_INTERVAL 100      // 100 ms - update IMU data
 #define IMU_PUBLISH_INTERVAL_MS 3000UL // Setel ke 3 detik sesuai permintaan
 #define STATUS_PRINT_INTERVAL_MS 60000UL
 #define GYRO_EMA_ALPHA      0.2f
@@ -114,7 +116,7 @@
 #define GPS_ALT_RANGE       50.0     // Variance range
 
 // IMU Dummy - Accelerometer & Gyroscope ranges
-#define IMU_ACCEL_RANGE     2.0      // ±2g
-#define IMU_GYRO_RANGE      250.0    // ±250 deg/s
+#define IMU_ACCEL_RANGE     2.0      // Â±2g
+#define IMU_GYRO_RANGE      250.0    // Â±250 deg/s
 
 #endif // CONFIG_H

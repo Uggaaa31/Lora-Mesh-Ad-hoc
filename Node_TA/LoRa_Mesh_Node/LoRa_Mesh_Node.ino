@@ -18,8 +18,8 @@
 // ================================================================
 // KONFIGURASI NODE - Ganti untuk setiap unit hardware
 // ================================================================
-#define NODE_ID   3
-#define NODE_NAME "TRK-003"
+#define NODE_ID   1
+#define NODE_NAME "TRK-001"
 
 // ================================================================
 // RUNTIME CONFIG - diisi dari NVRAM atau default config.h
@@ -42,6 +42,47 @@ float gpsLatOffset = 0, gpsLonOffset = 0, gpsAltOffset = 0;
 uint32_t epochOffsetMsLow32 = 0;
 bool timeSynced             = false;
 
+// Data packet sequence counter (independen dari AODV sequence)
+uint32_t dataSequence = 0;
+
+// ================================================================
+// DUPLICATE PACKET DETECTION CACHE
+// ================================================================
+#define DUP_CACHE_SIZE 32
+#define DUP_CACHE_TTL_MS 10000  // Paket dianggap duplikat jika diterima dalam 10 detik
+struct DupCacheEntry {
+    uint8_t sourceID;
+    uint32_t seqNum;
+    uint8_t pktType;
+    unsigned long timestamp;
+    bool valid;
+};
+DupCacheEntry dupCache[DUP_CACHE_SIZE];
+uint8_t dupCacheIdx = 0;
+
+bool isDuplicate(uint8_t src, uint32_t seq, uint8_t type) {
+    unsigned long now = millis();
+    for (int i = 0; i < DUP_CACHE_SIZE; i++) {
+        if (dupCache[i].valid &&
+            dupCache[i].sourceID == src &&
+            dupCache[i].seqNum == seq &&
+            dupCache[i].pktType == type &&
+            (now - dupCache[i].timestamp) < DUP_CACHE_TTL_MS) {
+            return true;
+        }
+    }
+    return false;
+}
+
+void addToDupCache(uint8_t src, uint32_t seq, uint8_t type) {
+    dupCache[dupCacheIdx].sourceID = src;
+    dupCache[dupCacheIdx].seqNum = seq;
+    dupCache[dupCacheIdx].pktType = type;
+    dupCache[dupCacheIdx].timestamp = millis();
+    dupCache[dupCacheIdx].valid = true;
+    dupCacheIdx = (dupCacheIdx + 1) % DUP_CACHE_SIZE;
+}
+
 // ================================================================
 // FUNCTION PROTOTYPES
 // ================================================================
@@ -57,6 +98,20 @@ void sendPacketCallback(const LoRaPacket& packet);
 // ================================================================
 // SETUP
 // ================================================================
+// Callback untuk mengirim diagnostic route discovery ke Gateway via LoRa
+void sendDiagnosticCallback(const DiscoveryDiagPayload& diag) {
+    if (!aodv.hasRouteTo(GATEWAY_ID)) return;
+
+    static uint32_t diagSeq = 0;
+    LoRaPacket pkt = LoRaPacketHandler::createDiagnosticPacket(
+        NODE_ID, GATEWAY_ID, diag, ++diagSeq);
+    pkt.header.nextHop = aodv.getNextHop(GATEWAY_ID);
+    pkt.header.checksum = LoRaPacketHandler::calculateChecksum(pkt);
+    sendPacketCallback(pkt);
+    Serial.printf("[DIAG TX] target=%u discovery=%lums hops=%u success=%u\n",
+                  diag.targetNodeId, (unsigned long)diag.discoveryMs,
+                  diag.hopCount, diag.success);
+}
 void setup() {
     Serial.begin(SERIAL_BAUD);
     delay(1000);
@@ -78,7 +133,7 @@ void setup() {
 
     // 2. Mulai WiFi AP Config Mode (selalu aktif selama node menyala)
     //    LoRa dan WiFi AP bisa berjalan bersamaan di ESP32-S3
-    WebConfig::begin(NODE_NAME, runtimeCfg);
+    WebConfig::begin(NODE_NAME, runtimeCfg, NODE_ID);
 
     // 3. Init LoRa dengan runtime config
     initLoRa();
@@ -86,6 +141,8 @@ void setup() {
     // 4. Init AODV Routing
     aodv.begin();
     aodv.onSendPacket = sendPacketCallback;
+    aodv.onDiagnosticReady = sendDiagnosticCallback;
+    aodv.epochOffsetPtr = &epochOffsetMsLow32;
 
     // 5. Init dummy sensors
     initSensors();
@@ -95,8 +152,14 @@ void setup() {
 }
 
 // ================================================================
-// MAIN LOOP
+// MAIN LOOP — Interval Tetap 3 Detik + Offset Per Node
 // ================================================================
+// Setiap node mengirim data setiap 3 detik (DATA_SEND_INTERVAL).
+// Offset awal = NODE_ID * 500ms untuk menghindari tabrakan saat boot.
+
+unsigned long lastSendTime = 0;
+bool initialOffsetDone = false;
+
 void loop() {
     unsigned long now = millis();
 
@@ -108,10 +171,24 @@ void loop() {
     if (now - lastGPSUpdate > GPS_UPDATE_INTERVAL) { updateGPSData(); lastGPSUpdate = now; }
     if (now - lastIMUUpdate > IMU_UPDATE_INTERVAL)  { updateIMUData(); lastIMUUpdate = now; }
 
-    static unsigned long nextSend = millis() + random(3000, 8000);
-    if (now > nextSend) {
+    // ============================================================
+    // FIXED INTERVAL SCHEDULING (3 detik + offset NODE_ID * 500ms)
+    // ============================================================
+    if (!initialOffsetDone) {
+        // Offset awal agar node tidak kirim bersamaan saat boot
+        lastSendTime = now - DATA_SEND_INTERVAL + (NODE_ID * 500UL);
+        initialOffsetDone = true;
+    }
+
+    if (now - lastSendTime >= DATA_SEND_INTERVAL) {
         bool ok = sendSensorData();
-        nextSend = ok ? now + DATA_SEND_INTERVAL + random(-1000, 1000) : now + 3000;
+        if (ok) {
+            lastSendTime = now;
+            Serial.printf("[TX] Sent OK | SF=%d BW=%dkHz | interval=%dms\n",
+                          runtimeCfg.sf, runtimeCfg.bwKHz, DATA_SEND_INTERVAL);
+        } else {
+            // Retry di iterasi berikutnya (tidak reset lastSendTime)
+        }
     }
 
     receivePackets();
@@ -122,6 +199,9 @@ void loop() {
         Serial.printf("[STATUS] Route OK=%d GAGAL=%d | Sync=%s EpochLow32=%lu\n",
                       aodv.routeDiscoverySuccess, aodv.routeDiscoveryFail,
                       timeSynced?"YA":"BELUM", (unsigned long)epochOffsetMsLow32);
+        Serial.printf("[CONFIG] SF=%d BW=%dkHz Interval=%dms Offset=%dms\n",
+                      runtimeCfg.sf, runtimeCfg.bwKHz,
+                      DATA_SEND_INTERVAL, NODE_ID * 500);
         lastPrint = now;
     }
 
@@ -137,6 +217,7 @@ void loop() {
 
     delay(10);
 }
+
 
 // ================================================================
 // LORA INITIALIZATION ??? Gunakan runtimeCfg dari NVRAM/default
@@ -174,11 +255,9 @@ void initLoRa() {
 // ================================================================
 void initSensors() {
     randomSeed(analogRead(0) + NODE_ID * 1000);
-    gpsLatOffset = (NODE_ID - 3) * 0.002f;
-    gpsLonOffset = (NODE_ID - 3) * 0.002f;
+    gpsLatOffset = (NODE_ID - 1) * 0.002f;
+    gpsLonOffset = (NODE_ID - 1) * 0.002f;
     gpsAltOffset = NODE_ID * 5.0f;
-    memset(sensorData.nodeID, 0, sizeof(sensorData.nodeID));
-    strncpy(sensorData.nodeID, NODE_NAME, sizeof(sensorData.nodeID) - 1);
     sensorData.batteryVoltage = 3.7f + (random(0, 100) / 100.0f);
     sensorData.txTimestamp    = 0;
     updateGPSData(); updateIMUData();
@@ -211,6 +290,8 @@ bool sendSensorData() {
     sensorData.txTimestamp    = timeSynced
         ? ((uint32_t)millis() + epochOffsetMsLow32)
         : (uint32_t)millis();
+    sensorData.routeDiscMs = 0;
+    sensorData.routeHops = 0;
 
     if (!aodv.hasRouteTo(GATEWAY_ID)) {
         Serial.println("No route, initiating discovery...");
@@ -218,8 +299,19 @@ bool sendSensorData() {
         return false;
     }
 
+    uint32_t lastDiscoveryMs = 0;
+    uint8_t lastDiscoveryHops = 0;
+    if (aodv.getLastSuccessfulDiscovery(GATEWAY_ID, lastDiscoveryMs, lastDiscoveryHops)) {
+        sensorData.routeDiscMs = lastDiscoveryMs;
+    }
+
+    sensorData.routeHops = aodv.getRouteHopCount(GATEWAY_ID);
+    if (sensorData.routeHops == 0) {
+        sensorData.routeHops = lastDiscoveryHops;
+    }
+
     LoRaPacket pkt = packetHandler.createDataPacket(
-        NODE_ID, GATEWAY_ID, sensorData, aodv.getSequenceNumber());
+        NODE_ID, GATEWAY_ID, sensorData, ++dataSequence);
     pkt.header.nextHop  = aodv.getNextHop(GATEWAY_ID);
     pkt.header.checksum = LoRaPacketHandler::calculateChecksum(pkt);
 
@@ -243,27 +335,50 @@ void receivePackets() {
 
 void handleReceivedPacket(const LoRaPacket& packet) {
     if (packet.header.sourceID == NODE_ID) return;
-    switch (packet.header.packetType) {
+
+    // Duplicate detection untuk data packets
+    uint8_t ptype = packet.header.packetType;
+    if (ptype == PKT_TYPE_DATA || ptype == PKT_TYPE_FATIGUE_IMU ||
+        ptype == PKT_TYPE_SAFETY_CONDITION || ptype == PKT_TYPE_VEHICLE_TELEMETRY ||
+        ptype == PKT_TYPE_DIAGNOSTIC) {
+        if (isDuplicate(packet.header.sourceID, packet.header.sequenceNum, ptype)) {
+            Serial.printf("[DUP] Dropped src=%u seq=%u type=0x%02X\n",
+                          packet.header.sourceID, packet.header.sequenceNum, ptype);
+            return;
+        }
+        addToDupCache(packet.header.sourceID, packet.header.sequenceNum, ptype);
+    }
+
+    switch (ptype) {
         case PKT_TYPE_DATA:
         case PKT_TYPE_FATIGUE_IMU:
         case PKT_TYPE_FATIGUE_STATUS:
         case PKT_TYPE_SAFETY_CONDITION:
         case PKT_TYPE_VEHICLE_TELEMETRY:
+        case PKT_TYPE_DIAGNOSTIC:
             if (packet.header.nextHop == NODE_ID
                 && aodv.hasRouteTo(packet.header.destinationID)
                 && packet.header.hopCount < MAX_HOP_COUNT) {
                 LoRaPacket fwd = packet;
                 fwd.header.hopCount++;
+                // Append NODE_ID ke route path agar Gateway bisa melihat jalur yang dilalui
+                if (fwd.header.routePathLen < MAX_ROUTE_PATH) {
+                    fwd.header.routePath[fwd.header.routePathLen] = NODE_ID;
+                    fwd.header.routePathLen++;
+                }
                 fwd.header.nextHop  = aodv.getNextHop(packet.header.destinationID);
                 fwd.header.checksum = LoRaPacketHandler::calculateChecksum(fwd);
                 sendPacketCallback(fwd);
+                Serial.printf("[RELAY] src=%u dst=%u type=0x%02X hop=%u via=%s\n",
+                              packet.header.sourceID, packet.header.destinationID,
+                              ptype, fwd.header.hopCount, NODE_NAME);
             }
             break;
-        case 0x02: aodv.handleRREQ(packet); break;
-        case 0x03: aodv.handleRREP(packet); break;
-        case 0x04: aodv.handleRERR(packet); break;
-        case 0x05: aodv.handleHello(packet); break;
-        case 0x06:  // TIMESYNC dari gateway
+        case PKT_TYPE_RREQ: aodv.handleRREQ(packet); break;
+        case PKT_TYPE_RREP: aodv.handleRREP(packet); break;
+        case PKT_TYPE_RERR: aodv.handleRERR(packet); break;
+        case PKT_TYPE_HELLO: aodv.handleHello(packet); break;
+        case PKT_TYPE_TIMESYNC:
             if (packet.header.payloadLength == sizeof(TimeSyncPayload)) {
                 TimeSyncPayload ts;
                 memcpy(&ts, packet.payload, sizeof(TimeSyncPayload));
@@ -272,6 +387,18 @@ void handleReceivedPacket(const LoRaPacket& packet) {
                 timeSynced = true;
                 Serial.printf("[TIMESYNC] OK EpochLow32=%lu\n",
                               (unsigned long)epochOffsetMsLow32);
+            }
+            break;
+        case PKT_TYPE_START_TEST:
+            if (packet.header.payloadLength == sizeof(StartTestPayload)) {
+                StartTestPayload st;
+                memcpy(&st, packet.payload, sizeof(StartTestPayload));
+                Serial.printf("[START_TEST] SF=%u BW=%lukHz — Reboot dalam 2 detik...\n",
+                              st.sf, (unsigned long)st.bwKHz);
+                // Simpan ke NVRAM via WebConfig, lalu reboot
+                WebConfig::saveTestConfig(st.sf, st.bwKHz);
+                delay(2000);
+                ESP.restart();
             }
             break;
     }

@@ -57,6 +57,13 @@ select:focus{border-color:#f093fb}
   color:#fff;border:none;border-radius:10px;font-size:.96em;
   font-weight:600;cursor:pointer;margin-top:8px}
 .btn:active{opacity:.8}
+.sep{border:0;border-top:1px solid #2d4a7a;margin:18px 0}
+.btn-test{background:linear-gradient(135deg,#48bb78,#38a169);
+  width:100%;padding:13px;color:#fff;border:none;border-radius:10px;
+  font-size:.96em;font-weight:600;cursor:pointer;margin-top:8px}
+.btn-test:active{opacity:.8}
+.test-info{background:rgba(72,187,120,.1);border:1px solid rgba(72,187,120,.3);
+  border-radius:8px;padding:10px;margin-top:12px;font-size:.78em;color:#68d391}
 </style></head><body><div class="card">
 <h1>Gateway LoRa Config</h1>
 <div class="sub">GATEWAY (ID=0) - SF/BW bisa diubah, WiFi dipilih dari secrets.h</div>
@@ -88,7 +95,25 @@ select:focus{border-color:#f093fb}
 <div class="note">Daftar ini tidak melakukan scan WiFi lain. Hanya membaca secrets.h.</div>
 </div>
 <button type="submit" class="btn">Simpan &amp; Reboot Gateway</button>
-</form></div></body></html>
+</form>
+<hr class="sep">
+<form action="/start_test" method="POST" id="frmTest">
+<input type="hidden" name="sf" id="test_sf" value="%%SF%%">
+<input type="hidden" name="bw" id="test_bw" value="%%BW%%">
+<div class="fld"><label>&#x1F4E1; Broadcast START_TEST ke Semua Node</label>
+<div class="note">Kirim parameter SF/BW terpilih di atas ke semua node via LoRa. Semua node (termasuk Gateway) akan reboot dengan config baru.</div>
+</div>
+<button type="submit" class="btn-test">&#x26A1; Broadcast &amp; Reboot Semua</button>
+<div class="test-info">Gateway broadcast 2x untuk reliability, lalu reboot dalam 3 detik.</div>
+</form>
+<script>
+// Sync SF/BW dropdown ke hidden fields form start_test
+var sfSel=document.querySelector('select[name="sf"]');
+var bwSel=document.querySelector('select[name="bw"]');
+if(sfSel){sfSel.addEventListener('change',function(){document.getElementById('test_sf').value=this.value});}
+if(bwSel){bwSel.addEventListener('change',function(){document.getElementById('test_bw').value=this.value});}
+</script>
+</div></body></html>
 )==";
 
 static const char _GW_SAVED[] PROGMEM = R"==(
@@ -107,6 +132,15 @@ static Preferences    _prefs;
 static LoRaRuntimeCfg _cfg;
 static bool           _started = false;
 static bool           _reboot  = false;
+
+// Callback untuk broadcast START_TEST packet via LoRa
+typedef void (*StartTestBroadcastFn)(uint8_t sf, uint32_t bwKHz);
+static StartTestBroadcastFn _onStartTest = nullptr;
+void saveTestConfig(uint8_t sf, uint32_t bwKHz); // Forward declaration
+
+void setStartTestCallback(StartTestBroadcastFn fn) {
+    _onStartTest = fn;
+}
 
 static uint8_t _sanitizeProfileIndex(int idx) {
     if (idx < 0 || idx >= (int)WIFI_PROFILE_COUNT) return 0;
@@ -239,6 +273,37 @@ void begin(const String& stationIP, const String& apIP, const LoRaRuntimeCfg& cu
     _srv = new WebServer(80);
     _srv->on("/", HTTP_GET, _onConfig);
     _srv->on("/save", HTTP_POST, _onConfigSave);
+    _srv->on("/start_test", HTTP_POST, []() {
+        // Ambil SF/BW dari form (sama dengan yang ditampilkan di halaman)
+        uint8_t sf = _cfg.sf;
+        uint32_t bw = _cfg.bwKHz;
+        if (_srv->hasArg("sf")) sf = _srv->arg("sf").toInt();
+        if (_srv->hasArg("bw")) bw = _srv->arg("bw").toInt();
+        // Tapi karena form START_TEST tidak punya field sendiri,
+        // gunakan config yang sudah tersimpan di _cfg
+        sf = constrain(sf, 7, 12);
+        bw = (bw == 250) ? 250 : 125;
+
+        Serial.printf("[GWConfig] START_TEST broadcast: SF=%d BW=%lukHz\n", sf, (unsigned long)bw);
+
+        if (_onStartTest) {
+            _onStartTest(sf, bw);
+        }
+
+        _srv->send(200, "text/html; charset=UTF-8",
+            "<!DOCTYPE html><html><head><meta charset='UTF-8'>"
+            "<style>body{background:#0f0f1a;color:#68d391;font-family:sans-serif;"
+            "display:flex;align-items:center;justify-content:center;height:100vh;text-align:center}"
+            "</style></head><body><div><div style='font-size:3em'>&#x1F4E1;</div>"
+            "<h2 style='margin:12px 0'>START_TEST Broadcast Terkirim</h2>"
+            "<p style='color:#a0aec0'>Semua node + gateway reboot dalam 3 detik.</p>"
+            "</div></body></html>");
+
+        // Simpan & reboot gateway juga
+        saveTestConfig(sf, bw);
+        delay(3000);
+        ESP.restart();
+    });
     _srv->onNotFound([]() {
         GWWebConfig::_srv->sendHeader("Location", "/");
         GWWebConfig::_srv->send(302, "", "");
@@ -263,5 +328,16 @@ void handle() {
 }
 
 bool isStarted() { return _started; }
+
+// Simpan SF/BW dari START_TEST ke NVRAM (dipanggil sebelum reboot)
+void saveTestConfig(uint8_t sf, uint32_t bwKHz) {
+    sf = constrain(sf, 7, 12);
+    bwKHz = (bwKHz == 250) ? 250 : 125;
+    _prefs.begin("lora-cfg", false);
+    _prefs.putUChar("sf", sf);
+    _prefs.putUInt("bw", bwKHz);
+    _prefs.end();
+    Serial.printf("[GWConfig] START_TEST saved: SF=%d BW=%lukHz\n", sf, (unsigned long)bwKHz);
+}
 
 } // namespace GWWebConfig

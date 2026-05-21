@@ -85,6 +85,7 @@ public:
     // Route management
     bool hasRouteTo(uint8_t destination);
     uint8_t getNextHop(uint8_t destination);
+    uint8_t getRouteHopCount(uint8_t destination);
     bool addRoute(uint8_t destination, uint8_t nextHop, uint8_t hopCount, uint32_t destSeq);
     void invalidateRoute(uint8_t destination);
     void cleanupRoutes();  // Garbage collection
@@ -121,6 +122,17 @@ public:
 
     // Callbacks - set these to handle packet transmission
     void (*onSendPacket)(const LoRaPacket& packet) = nullptr;
+
+    // Callback untuk mengirim laporan diagnostik route discovery ke Gateway
+    void (*onDiagnosticReady)(const DiscoveryDiagPayload& diag) = nullptr;
+
+    // Pointer ke epochOffsetMsLow32 di .ino (untuk timestamp epoch)
+    uint32_t* epochOffsetPtr = nullptr;
+
+    // Hasil discovery terakhir (untuk akses dari .ino)
+    DiscoveryDiagPayload lastDiagResult;
+    bool hasDiagResult = false;
+    bool getLastSuccessfulDiscovery(uint8_t destination, uint32_t& discoveryMs, uint8_t& hops);
     
 private:
     uint8_t myNodeID;
@@ -133,6 +145,8 @@ private:
     
     unsigned long lastHelloTime;
     unsigned long lastCleanupTime;
+    uint32_t lastSuccessfulDiscoveryMs[MAX_NODES];
+    uint8_t lastSuccessfulDiscoveryHops[MAX_NODES];
     
     // Helper methods
     int findRouteIndex(uint8_t destination);

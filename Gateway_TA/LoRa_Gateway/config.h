@@ -40,7 +40,7 @@ struct WiFiProfile {
 #define LORA_MISO_PIN       40       // SPI-B MISO
 #define LORA_CS_PIN         5        // LoRa CS
 #define LORA_RST_PIN        7        // LoRa reset (output)
-#define LORA_DIO0_PIN       1        // LoRa DIO0/IRQ (input)
+#define LORA_DIO0_PIN       6        // LoRa DIO0/IRQ (input)
 
 // ================================================================
 // NETWORK CONFIGURATION
@@ -79,15 +79,17 @@ struct WiFiProfile {
 #define PKT_TYPE_FATIGUE_STATUS 0x32 // Alarm/status command (Gateway -> Node)
 #define PKT_TYPE_SAFETY_CONDITION 0x41 // Safety condition flags (Node -> Gateway)
 #define PKT_TYPE_VEHICLE_TELEMETRY 0x09 // Legacy payload compatibility
+#define PKT_TYPE_DIAGNOSTIC         0x0A // Route discovery diagnostic (Node -> Gateway)
+#define PKT_TYPE_START_TEST         0x0B // Start test command (Gateway -> Nodes, broadcast)
 
 // ================================================================
 // DATA COLLECTION PARAMETERS
 // CATATAN: Gateway hanya MENERIMA data, bukan mengirim sensor.
 // Nilai berikut adalah REFERENSI — harus sama dengan Node_TA/config.h
 // ================================================================
-#define DATA_SEND_INTERVAL  3000     // Referensi untuk node mesh standar
-#define GPS_UPDATE_INTERVAL 1000     // Referensi
-#define IMU_UPDATE_INTERVAL 1000     // Referensi
+#define DATA_SEND_INTERVAL  3000     // 3 detik - interval kirim sensor (harus sama dengan Node)
+#define GPS_UPDATE_INTERVAL 100      // 100 ms - Referensi (harus sama dengan Node)
+#define IMU_UPDATE_INTERVAL 100      // 100 ms - Referensi (harus sama dengan Node)
 #define OBSERVATION_PERIOD_MS            300000UL
 #define DEFAULT_NODE_SEND_INTERVAL_MS    3000UL
 #define FATIGUE_NODE_SEND_INTERVAL_MS    3000UL
@@ -132,14 +134,15 @@ struct WiFiProfile {
 // ================================================================
 #define USE_MQTT            true
 #define MQTT_URI            "wss://mqtt.aistrack.site:443/"
-#define MQTT_TOPIC_PREFIX   "fms/lora"
-#define MQTT_TOPIC_DATA     "fms/lora"           // Sensor data per node
-#define MQTT_TOPIC_STATUS   "fms/lora/status"    // Statistik QoS gateway
-#define MQTT_TOPIC_DEBUG    "fms/lora/debug"     // Debug messages
-#define MQTT_TOPIC_FATIGUE_IMU    "fms/lora/fatigue_detection/imu"
-#define MQTT_TOPIC_FATIGUE_STATUS "fms/fatigue_detection/vision"
-#define MQTT_TOPIC_SAFETY_CONDITION "fms/lora/safety/condition"
-#define MQTT_TOPIC_BNO_DATA       "fms/lora/bno/data"
+#define MQTT_TOPIC_PREFIX   "lora/fms"
+#define MQTT_TOPIC_DATA     "lora/fms"           // Sensor data per node
+#define MQTT_TOPIC_STATUS   "lora/fms/status"    // Statistik QoS gateway
+#define MQTT_TOPIC_DEBUG    "lora/fms/debug"     // Debug messages
+#define MQTT_TOPIC_FATIGUE_IMU    "lora/fms/fatigue_detection/imu"
+#define MQTT_TOPIC_FATIGUE_STATUS "lora/fms/fatigue_detection/vision"
+#define MQTT_TOPIC_SAFETY_CONDITION "lora/fms/safety/condition"
+#define MQTT_TOPIC_BNO_DATA       "lora/fms/bno/data"
+#define MQTT_TOPIC_DIAGNOSTIC     "lora/fms/diagnostic/route"
 
 // HTTP fallback (jika USE_MQTT = false)
 #define SERVER_URL          "http://192.168.1.100:3000/api/lora-data"

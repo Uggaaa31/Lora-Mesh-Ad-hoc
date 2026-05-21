@@ -1,0 +1,287 @@
+<!doctype html>
+<html lang="id">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>LoRa Mesh MQTT Dashboard</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <header class="topbar app-header">
+      <div>
+        <p class="eyebrow">Localhost Test Console</p>
+        <h1>LoRa Mesh MQTT Dashboard</h1>
+      </div>
+      <div class="header-right">
+        <div id="mqttBadge" class="badge offline">MQTT: OFFLINE</div>
+      </div>
+    </header>
+
+    <div class="app-layout">
+      <aside class="sidebar">
+        <nav class="side-nav">
+          <button class="nav-btn active" type="button" data-page="overview">Overview</button>
+          <button class="nav-btn" type="button" data-page="monitoring">Monitoring</button>
+          <button class="nav-btn" type="button" data-page="history">Riwayat & Export</button>
+        </nav>
+
+        <div class="sidebar-note small">
+          Gunakan trial terpisah per kombinasi uji agar data CSV mudah dianalisis.
+        </div>
+      </aside>
+
+      <main class="pages">
+        <section class="page active" data-page="overview">
+          <div class="grid two-cols">
+            <section class="card">
+              <h2>Kontrol Trial Uji</h2>
+              <div class="small quick-intro">
+                Alur cepat: pilih konteks uji, isi parameter, klik <b>Auto Label</b>, lalu <b>Start Trial</b>.
+              </div>
+              <div class="quick-tools">
+                <label>Jenis Pengujian (opsional)
+                  <select id="testType">
+                    <option value="">Tanpa tag skenario</option>
+                    <option value="S2_ROUTE">Skenario 2 - Route Discovery</option>
+                    <option value="S3_QOS">Skenario 3 - QoS & Latensi</option>
+                    <option value="S4_PARAM">Skenario 4 - Parameter LoRa</option>
+                    <option value="S5_RANGE">Skenario 5 - Jangkauan Multi-hop</option>
+                  </select>
+                </label>
+                <label>Profil Payload (opsional)
+                  <select id="payloadProfile">
+                    <option value="">Tanpa tag payload</option>
+                    <option value="TRK75">TRK (75B)</option>
+                    <option value="SAENAB21">lora_saenab (21B)</option>
+                    <option value="NAILAH12">lora_nailah (12B)</option>
+                  </select>
+                </label>
+              </div>
+              <form id="sessionForm" class="form-grid">
+                <label>Label
+                  <input id="label" type="text" placeholder="Kosongkan lalu klik Auto Label jika ingin otomatis" />
+                </label>
+                <label>SF
+                  <input id="sf" type="text" list="sfOptions" placeholder="7-12" required />
+                </label>
+                <label>BW (kHz)
+                  <input id="bwKHz" type="text" list="bwOptions" placeholder="125 atau 250" required />
+                </label>
+                <label>CR
+                  <input id="cr" type="text" list="crOptions" value="4/5" required />
+                </label>
+                <label>Jarak (m)
+                  <input id="distanceM" type="text" list="distanceOptions" placeholder="200/300/350/400" required />
+                </label>
+                <label>Durasi Trial (menit)
+                  <input id="trialDurationMin" type="text" list="durationOptions" value="5" required />
+                </label>
+                <label>Iterasi Ke-
+                  <input id="iterasi" type="number" min="1" max="10" value="1" required />
+                </label>
+              </form>
+              <datalist id="sfOptions">
+                <option value="7"></option>
+                <option value="8"></option>
+                <option value="9"></option>
+                <option value="10"></option>
+                <option value="11"></option>
+                <option value="12"></option>
+              </datalist>
+              <datalist id="bwOptions">
+                <option value="125"></option>
+                <option value="250"></option>
+              </datalist>
+              <datalist id="crOptions">
+                <option value="4/5"></option>
+              </datalist>
+              <datalist id="hopOptions">
+                <option value="1"></option>
+                <option value="2"></option>
+                <option value="3"></option>
+                <option value="4"></option>
+                <option value="5"></option>
+              </datalist>
+              <datalist id="distanceOptions">
+                <option value="200"></option>
+                <option value="300"></option>
+                <option value="350"></option>
+                <option value="400"></option>
+              </datalist>
+              <datalist id="durationOptions">
+                <option value="1"></option>
+                <option value="3"></option>
+                <option value="5"></option>
+                <option value="10"></option>
+              </datalist>
+              <div class="actions">
+                <button id="fillDefaultBtn" type="button" class="btn">Isi Default</button>
+                <button id="autoLabelBtn" type="button" class="btn">Auto Label</button>
+                <button id="copyLastBtn" type="button" class="btn">Salin Trial Terakhir</button>
+              </div>
+              <div class="actions">
+                <button id="startBtn" type="button" class="btn primary">Start Trial</button>
+                <button id="stopBtn" type="button" class="btn warn">Stop Trial</button>
+                <button id="resetBtn" type="button" class="btn danger">Reset Data</button>
+              </div>
+              <div id="sessionStatus" class="small"></div>
+            </section>
+
+            <section class="card">
+              <h2>Ringkasan Trial Aktif / Terakhir</h2>
+              <div id="summaryInfo"></div>
+            </section>
+
+            <section class="card">
+              <h2>Readiness Check</h2>
+              <div id="readinessInfo" class="small"></div>
+            </section>
+
+            <section class="card">
+              <h2>Konfigurasi MQTT</h2>
+              <div id="configInfo" class="mono small"></div>
+            </section>
+          </div>
+        </section>
+
+        <section class="page" data-page="monitoring">
+          <div class="grid single-col">
+            <section class="card">
+              <h2>Skenario 2: Pengujian Konektivitas dan Pembentukan Rute (Route discovery AODV)</h2>
+              <div class="table-wrap">
+                <table id="routeTable">
+                  <thead>
+                    <tr>
+                      <th>Waktu</th>
+                      <th>Node</th>
+                      <th>ID Target </th>
+                      <th>Hop Dilalui</th>
+                      <th>Jalur Route</th>
+                      <th>Waktu RREQ</th>
+                      <th>Waktu RREP</th>
+                      <th>Waktu Pembentukan Rute (ms)</th>
+                      <th>Result</th>
+                    </tr>
+                  </thead>
+                  <tbody></tbody>
+                </table>
+              </div>
+            </section>
+
+            <section class="card">
+              <h2>Skenario 3: Pengujian Kualitas Pengiriman Data Sensor (QoS) dan Latensi</h2>
+              <div class="table-wrap">
+                <table id="nodesTable">
+                  <thead>
+                    <tr>
+                      <th>Iterasi</th>
+                      <th>Node</th>
+                      <th>Paket Masuk</th>
+                      <th>PDR %</th>
+                      <th>PLR %</th>
+                      <th>Delay Pengiriman Data (ms)</th>
+                    </tr>
+                  </thead>
+                  <tbody></tbody>
+                </table>
+              </div>
+            </section>
+
+            <section class="card">
+              <h2>Skenario 4: Pengujian Pengaruh Parameter LoRa terhadap Performa Jaringan</h2>
+              <div class="table-wrap">
+                <table id="paramTable">
+                  <thead>
+                    <tr>
+                      <th>SF</th>
+                      <th>BW</th>
+                      <th>CR</th>
+                      <th>Jarak (m)</th>
+                      <th>Paket Dikirim</th>
+                      <th>Paket Diterima</th>
+                      <th>PDR %</th>
+                      <th>PLR %</th>
+                      <th>Delay Pengiriman Data (ms)</th>
+                    </tr>
+                  </thead>
+                  <tbody></tbody>
+                </table>
+              </div>
+            </section>
+
+            <section class="card">
+              <h2>Skenario 5: Pengujian Jangkauan Komunikasi Multi hop</h2>
+              <div class="table-wrap">
+                <table id="rangeTable">
+                  <thead>
+                    <tr>
+                      <th>Node</th>
+                      <th>Jarak (m)</th>
+                      <th>Jumlah Hop Dilalui</th>
+                      <th>Jalur Route</th>
+                      <th>PDR %</th>
+                      <th>Status Pengiriman</th>
+                    </tr>
+                  </thead>
+                  <tbody></tbody>
+                </table>
+              </div>
+            </section>
+          </div>
+        </section>
+
+        <section class="page" data-page="history">
+          <div class="grid single-col">
+            <section class="card">
+              <h2>Semua Data MQTT Masuk (Riwayat & Export)</h2>
+              <div class="actions">
+                <a class="btn primary" href="/api/export/all_data.csv">Export All Data MQTT</a>
+                <a class="btn" href="/api/export/pengujian2_route.csv">Export Pengujian 2</a>
+                <a class="btn" href="/api/export/pengujian3_qos.csv">Export Pengujian 3</a>
+                <a class="btn" href="/api/export/pengujian4_parameter.csv">Export Pengujian 4</a>
+                <a class="btn" href="/api/export/pengujian5_jarak.csv">Export Pengujian 5</a>
+              </div>
+              <div class="table-wrap">
+                <table id="allMqttTable">
+                  <thead>
+                    <tr>
+                      <th>Waktu</th>
+                      <th>Jenis Event</th>
+                      <th>Topik MQTT</th>
+                      <th>Node</th>
+                      <th>Kode Trial</th>
+                      <th>Label</th>
+                      <th>SF</th>
+                      <th>BW</th>
+                      <th>CR</th>
+                      <th>Jarak (m)</th>
+                      <th>Durasi Trial (menit)</th>
+                      <th>Hop Dilalui</th>
+                      <th>Jalur Route</th>
+                      <th>Delay (ms)</th>
+                      <th>Waktu RREQ</th>
+                      <th>Waktu RREP</th>
+                      <th>Waktu Pembentukan Rute (ms)</th>
+                      <th>Retries RREQ</th>
+                      <th>Result</th>
+                      <th>RSSI</th>
+                    </tr>
+                  </thead>
+                  <tbody></tbody>
+                </table>
+              </div>
+            </section>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <script src="/app.js"></script>
+  </body>
+</html>

@@ -1,5 +1,7 @@
 /*
- * LoRa Packet Structure Library - Implementation
+ * LoRa Packet Structure Library - Implementation (UNIFIED v3.0)
+ * 
+ * PENTING: File ini HARUS identik di semua folder project!
  */
 
 #include "LoRa_Packet.h"
@@ -7,7 +9,11 @@
 LoRaPacketHandler::LoRaPacketHandler() {
 }
 
-// Create DATA packet with sensor payload
+// ================================================================
+// DATA PACKET CREATORS
+// ================================================================
+
+// Create DATA packet with sensor payload (TRK-001/002/003)
 LoRaPacket LoRaPacketHandler::createDataPacket(uint8_t sourceID, uint8_t destID, 
                                                 const SensorDataPayload& data, uint32_t seqNum) {
     LoRaPacket packet;
@@ -17,17 +23,132 @@ LoRaPacket LoRaPacketHandler::createDataPacket(uint8_t sourceID, uint8_t destID,
     packet.header.sequenceNum = seqNum;
     packet.header.hopCount = 0;
     packet.header.payloadLength = sizeof(SensorDataPayload);
+    packet.header.routePathLen = 1;
+    memset(packet.header.routePath, 0, MAX_ROUTE_PATH);
+    packet.header.routePath[0] = sourceID;
     
-    // Copy payload
     memcpy(packet.payload, &data, sizeof(SensorDataPayload));
-    
-    // Calculate checksum
     packet.header.checksum = calculateChecksum(packet);
     
     return packet;
 }
 
-// Create RREQ packet
+// Create IMU Fatigue packet (lora_saenab -> Gateway)
+LoRaPacket LoRaPacketHandler::createImuFatiguePacket(uint8_t sourceID, uint8_t destID,
+                                                     const ImuFatiguePayload& data, uint32_t seqNum) {
+    LoRaPacket packet;
+    packet.header.packetType = 0x31;  // PKT_TYPE_FATIGUE_IMU
+    packet.header.sourceID = sourceID;
+    packet.header.destinationID = destID;
+    packet.header.sequenceNum = seqNum;
+    packet.header.hopCount = 0;
+    packet.header.payloadLength = sizeof(ImuFatiguePayload);
+    packet.header.routePathLen = 1;
+    memset(packet.header.routePath, 0, MAX_ROUTE_PATH);
+    packet.header.routePath[0] = sourceID;
+
+    memcpy(packet.payload, &data, sizeof(ImuFatiguePayload));
+    packet.header.checksum = calculateChecksum(packet);
+    return packet;
+}
+
+// Create Fatigue Status packet (Gateway -> lora_saenab)
+LoRaPacket LoRaPacketHandler::createFatigueStatusPacket(uint8_t sourceID, uint8_t destID,
+                                                        const FatigueStatusPayload& data,
+                                                        uint32_t seqNum) {
+    LoRaPacket packet;
+    packet.header.packetType = 0x32;  // PKT_TYPE_FATIGUE_STATUS
+    packet.header.sourceID = sourceID;
+    packet.header.destinationID = destID;
+    packet.header.sequenceNum = seqNum;
+    packet.header.hopCount = 0;
+    packet.header.payloadLength = sizeof(FatigueStatusPayload);
+    packet.header.routePathLen = 1;
+    memset(packet.header.routePath, 0, MAX_ROUTE_PATH);
+    packet.header.routePath[0] = sourceID;
+
+    memcpy(packet.payload, &data, sizeof(FatigueStatusPayload));
+    packet.header.checksum = calculateChecksum(packet);
+    return packet;
+}
+
+// Create Safety Condition packet (lora_nailah -> Gateway)
+LoRaPacket LoRaPacketHandler::createSafetyConditionPacket(uint8_t sourceID, uint8_t destID,
+                                                          const SafetyConditionPayload& data,
+                                                          uint32_t seqNum) {
+    LoRaPacket packet;
+    packet.header.packetType = 0x41;  // PKT_TYPE_SAFETY_CONDITION
+    packet.header.sourceID = sourceID;
+    packet.header.destinationID = destID;
+    packet.header.sequenceNum = seqNum;
+    packet.header.hopCount = 0;
+    packet.header.payloadLength = sizeof(SafetyConditionPayload);
+    packet.header.routePathLen = 1;
+    memset(packet.header.routePath, 0, MAX_ROUTE_PATH);
+    packet.header.routePath[0] = sourceID;
+
+    memcpy(packet.payload, &data, sizeof(SafetyConditionPayload));
+    packet.header.checksum = calculateChecksum(packet);
+    return packet;
+}
+
+// Create Vehicle Telemetry packet (lora_nailah -> Gateway)
+LoRaPacket LoRaPacketHandler::createVehicleTelemetryPacket(uint8_t sourceID, uint8_t destID,
+                                                           const VehicleTelemetryPayload& data,
+                                                           uint32_t seqNum) {
+    LoRaPacket packet;
+    packet.header.packetType = 0x09;  // PKT_TYPE_VEHICLE_TELEMETRY
+    packet.header.sourceID = sourceID;
+    packet.header.destinationID = destID;
+    packet.header.sequenceNum = seqNum;
+    packet.header.hopCount = 0;
+    packet.header.payloadLength = sizeof(VehicleTelemetryPayload);
+    packet.header.routePathLen = 1;
+    memset(packet.header.routePath, 0, MAX_ROUTE_PATH);
+    packet.header.routePath[0] = sourceID;
+
+    memcpy(packet.payload, &data, sizeof(VehicleTelemetryPayload));
+    packet.header.checksum = calculateChecksum(packet);
+    return packet;
+}
+
+// Create Route Discovery Diagnostic packet (Node -> Gateway)
+LoRaPacket LoRaPacketHandler::createDiagnosticPacket(uint8_t sourceID, uint8_t destID,
+                                                     const DiscoveryDiagPayload& data,
+                                                     uint32_t seqNum) {
+    LoRaPacket packet;
+    packet.header.packetType = 0x0A;  // PKT_TYPE_DIAGNOSTIC
+    packet.header.sourceID = sourceID;
+    packet.header.destinationID = destID;
+    packet.header.sequenceNum = seqNum;
+    packet.header.hopCount = 0;
+    packet.header.payloadLength = sizeof(DiscoveryDiagPayload);
+    packet.header.routePathLen = 1;
+    memset(packet.header.routePath, 0, MAX_ROUTE_PATH);
+    packet.header.routePath[0] = sourceID;
+    memcpy(packet.payload, &data, sizeof(DiscoveryDiagPayload));
+    packet.header.checksum = calculateChecksum(packet);
+    return packet;
+}
+
+// Create START_TEST packet (Gateway -> all Nodes, broadcast)
+LoRaPacket LoRaPacketHandler::createStartTestPacket(uint8_t sourceID, const StartTestPayload& data) {
+    LoRaPacket packet;
+    packet.header.packetType = 0x0B;  // PKT_TYPE_START_TEST
+    packet.header.sourceID = sourceID;
+    packet.header.destinationID = 255;  // Broadcast
+    packet.header.sequenceNum = 0;
+    packet.header.hopCount = 0;
+    packet.header.payloadLength = sizeof(StartTestPayload);
+    memcpy(packet.payload, &data, sizeof(StartTestPayload));
+    packet.header.checksum = calculateChecksum(packet);
+    return packet;
+}
+
+// ================================================================
+// AODV ROUTING PACKET CREATORS
+// ================================================================
+
 LoRaPacket LoRaPacketHandler::createRREQPacket(uint8_t sourceID, const RREQPayload& rreq) {
     LoRaPacket packet;
     packet.header.packetType = 0x02;  // PKT_TYPE_RREQ
@@ -43,7 +164,6 @@ LoRaPacket LoRaPacketHandler::createRREQPacket(uint8_t sourceID, const RREQPaylo
     return packet;
 }
 
-// Create RREP packet
 LoRaPacket LoRaPacketHandler::createRREPPacket(uint8_t sourceID, uint8_t destID, 
                                                const RREPPayload& rrep, uint32_t seqNum) {
     LoRaPacket packet;
@@ -60,7 +180,6 @@ LoRaPacket LoRaPacketHandler::createRREPPacket(uint8_t sourceID, uint8_t destID,
     return packet;
 }
 
-// Create RERR packet
 LoRaPacket LoRaPacketHandler::createRERRPacket(uint8_t sourceID, const RERRPayload& rerr) {
     LoRaPacket packet;
     packet.header.packetType = 0x04;  // PKT_TYPE_RERR
@@ -76,7 +195,6 @@ LoRaPacket LoRaPacketHandler::createRERRPacket(uint8_t sourceID, const RERRPaylo
     return packet;
 }
 
-// Create HELLO packet
 LoRaPacket LoRaPacketHandler::createHelloPacket(uint8_t sourceID, uint32_t seqNum) {
     LoRaPacket packet;
     packet.header.packetType = 0x05;  // PKT_TYPE_HELLO
@@ -89,7 +207,10 @@ LoRaPacket LoRaPacketHandler::createHelloPacket(uint8_t sourceID, uint32_t seqNu
     return packet;
 }
 
-// Create TIMESYNC packet (Gateway -> Nodes, broadcast NTP epoch)
+// ================================================================
+// TIME SYNC
+// ================================================================
+
 LoRaPacket LoRaPacketHandler::createTimeSyncPacket(uint8_t sourceID, const TimeSyncPayload& ts) {
     LoRaPacket packet;
     packet.header.packetType = 0x06;  // PKT_TYPE_TIMESYNC
@@ -103,39 +224,10 @@ LoRaPacket LoRaPacketHandler::createTimeSyncPacket(uint8_t sourceID, const TimeS
     return packet;
 }
 
-LoRaPacket LoRaPacketHandler::createSafetyConditionPacket(uint8_t sourceID, uint8_t destID,
-                                                          const SafetyConditionPayload& data,
-                                                          uint32_t seqNum) {
-    LoRaPacket packet;
-    packet.header.packetType = 0x41;  // PKT_TYPE_SAFETY_CONDITION
-    packet.header.sourceID = sourceID;
-    packet.header.destinationID = destID;
-    packet.header.sequenceNum = seqNum;
-    packet.header.hopCount = 0;
-    packet.header.payloadLength = sizeof(SafetyConditionPayload);
+// ================================================================
+// CHECKSUM & VALIDATION
+// ================================================================
 
-    memcpy(packet.payload, &data, sizeof(SafetyConditionPayload));
-    packet.header.checksum = calculateChecksum(packet);
-    return packet;
-}
-
-LoRaPacket LoRaPacketHandler::createVehicleTelemetryPacket(uint8_t sourceID, uint8_t destID,
-                                                           const VehicleTelemetryPayload& data,
-                                                           uint32_t seqNum) {
-    LoRaPacket packet;
-    packet.header.packetType = 0x09;  // PKT_TYPE_VEHICLE_TELEMETRY
-    packet.header.sourceID = sourceID;
-    packet.header.destinationID = destID;
-    packet.header.sequenceNum = seqNum;
-    packet.header.hopCount = 0;
-    packet.header.payloadLength = sizeof(VehicleTelemetryPayload);
-
-    memcpy(packet.payload, &data, sizeof(VehicleTelemetryPayload));
-    packet.header.checksum = calculateChecksum(packet);
-    return packet;
-}
-
-// Calculate checksum for packet
 uint16_t LoRaPacketHandler::calculateChecksum(const LoRaPacket& packet) {
     uint16_t sum = 0;
     
@@ -150,6 +242,10 @@ uint16_t LoRaPacketHandler::calculateChecksum(const LoRaPacket& packet) {
     sum += ((packet.header.sequenceNum >> 16) & 0xFF);
     sum += ((packet.header.sequenceNum >> 24) & 0xFF);
     sum += packet.header.payloadLength;
+    sum += packet.header.routePathLen;
+    for (int r = 0; r < MAX_ROUTE_PATH; r++) {
+        sum += packet.header.routePath[r];
+    }
     
     // Checksum dari payload
     for (int i = 0; i < packet.header.payloadLength; i++) {
@@ -159,28 +255,28 @@ uint16_t LoRaPacketHandler::calculateChecksum(const LoRaPacket& packet) {
     return sum;
 }
 
-// Validate packet checksum
 bool LoRaPacketHandler::validatePacket(const LoRaPacket& packet) {
     uint16_t calculatedChecksum = calculateChecksum(packet);
     return (calculatedChecksum == packet.header.checksum);
 }
 
-// Serialize packet ke buffer
+// ================================================================
+// SERIALIZATION
+// ================================================================
+
 int LoRaPacketHandler::serializePacket(const LoRaPacket& packet, uint8_t* buffer, int bufferSize) {
     if (packet.header.payloadLength > MAX_PAYLOAD_SIZE) {
-        return -1;  // Invalid payload length
+        return -1;
     }
 
     int totalSize = sizeof(PacketHeader) + packet.header.payloadLength;
     
     if (totalSize > bufferSize) {
-        return -1;  // Buffer too small
+        return -1;
     }
     
-    // Copy header
     memcpy(buffer, &packet.header, sizeof(PacketHeader));
     
-    // Copy payload
     if (packet.header.payloadLength > 0) {
         memcpy(buffer + sizeof(PacketHeader), packet.payload, packet.header.payloadLength);
     }
@@ -188,36 +284,33 @@ int LoRaPacketHandler::serializePacket(const LoRaPacket& packet, uint8_t* buffer
     return totalSize;
 }
 
-// Deserialize buffer ke packet
 bool LoRaPacketHandler::deserializePacket(const uint8_t* buffer, int length, LoRaPacket& packet) {
-    if (length < sizeof(PacketHeader)) {
-        return false;  // Too short
+    if (length < (int)sizeof(PacketHeader)) {
+        return false;
     }
     
-    // Copy header
     memcpy(&packet.header, buffer, sizeof(PacketHeader));
 
-    // Validate payload length before copying
     if (packet.header.payloadLength > MAX_PAYLOAD_SIZE) {
         return false;
     }
     
-    // Validate length
     int expectedLength = sizeof(PacketHeader) + packet.header.payloadLength;
     if (length < expectedLength) {
-        return false;  // Incomplete packet
+        return false;
     }
     
-    // Copy payload
     if (packet.header.payloadLength > 0) {
         memcpy(packet.payload, buffer + sizeof(PacketHeader), packet.header.payloadLength);
     }
     
-    // Validate checksum
     return validatePacket(packet);
 }
 
-// Print packet untuk debugging
+// ================================================================
+// DEBUG UTILITIES
+// ================================================================
+
 void LoRaPacketHandler::printPacket(const LoRaPacket& packet) {
     Serial.println("=== Packet Info ===");
     Serial.printf("Type: %s (0x%02X)\n", getPacketTypeName(packet.header.packetType), packet.header.packetType);
@@ -233,7 +326,6 @@ void LoRaPacketHandler::printPacket(const LoRaPacket& packet) {
     Serial.println("==================");
 }
 
-// Get packet type name
 const char* LoRaPacketHandler::getPacketTypeName(uint8_t type) {
     switch (type) {
         case 0x01: return "DATA";
@@ -242,17 +334,16 @@ const char* LoRaPacketHandler::getPacketTypeName(uint8_t type) {
         case 0x04: return "RERR";
         case 0x05: return "HELLO";
         case 0x06: return "TIMESYNC";
+        case 0x09: return "VEHICLE_TELEMETRY";
+        case 0x0A: return "DIAGNOSTIC";
+        case 0x0B: return "START_TEST";
         case 0x31: return "FATIGUE_IMU";
         case 0x32: return "FATIGUE_STATUS";
         case 0x41: return "SAFETY_CONDITION";
-        case 0x07: return "FATIGUE_IMU";
-        case 0x08: return "FATIGUE_STATUS";
-        case 0x09: return "VEHICLE_TELEMETRY";
         default: return "UNKNOWN";
     }
 }
 
-// Compute simple checksum
 uint16_t LoRaPacketHandler::computeChecksum(const uint8_t* data, int length) {
     uint16_t sum = 0;
     for (int i = 0; i < length; i++) {

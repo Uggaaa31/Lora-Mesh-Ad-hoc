@@ -28,7 +28,7 @@
 #define LORA_MISO_PIN       40       // SPI-B MISO
 #define LORA_CS_PIN         5        // LoRa CS
 #define LORA_RST_PIN        7        // LoRa reset (output)
-#define LORA_DIO0_PIN       6        // LoRa DIO0/IRQ (input)
+#define LORA_DIO0_PIN       1        // LoRa DIO0/IRQ (input)
 
 // ================================================================
 // NETWORK CONFIGURATION
@@ -65,14 +65,16 @@
 #define PKT_TYPE_FATIGUE_STATUS     0x32 // Alarm/status command (Gateway -> Node)
 #define PKT_TYPE_SAFETY_CONDITION   0x41 // Safety condition flags (Node -> Gateway)
 #define PKT_TYPE_VEHICLE_TELEMETRY  0x09 // BNO055 + GPS + safety payload (Node -> Gateway)
+#define PKT_TYPE_DIAGNOSTIC         0x0A // Route discovery diagnostic (Node -> Gateway)
+#define PKT_TYPE_START_TEST         0x0B // Start test command (Gateway -> Nodes, broadcast)
 
 // ================================================================
 // DATA COLLECTION PARAMETERS
 // Sesuai skenario pengujian skripsi 3.3.4.3 (QoS/PDR/Latensi)
 // ================================================================
 #define DATA_SEND_INTERVAL  3000     // 3 detik - interval kirim sensor (sesuai skripsi)
-#define GPS_UPDATE_INTERVAL 1000     // 1 detik - update GPS dummy data
-#define IMU_UPDATE_INTERVAL 1000     // 1 detik - update IMU dummy data
+#define GPS_UPDATE_INTERVAL 100      // 100 ms - update GPS dummy data
+#define IMU_UPDATE_INTERVAL 100      // 100 ms - update IMU dummy data
 
 // ================================================================
 // DEBUG CONFIGURATION
@@ -102,7 +104,7 @@
 #define GPS_ALT_RANGE       50.0     // Variance range
 
 // IMU Dummy - Accelerometer & Gyroscope ranges
-#define IMU_ACCEL_RANGE     2.0      // ±2g
-#define IMU_GYRO_RANGE      250.0    // ±250 deg/s
+#define IMU_ACCEL_RANGE     2.0      // Â±2g
+#define IMU_GYRO_RANGE      250.0    // Â±250 deg/s
 
 #endif // CONFIG_H

@@ -34,7 +34,10 @@ struct MQTTQueueItem {
     uint8_t kind;
     uint8_t sourceNodeID;
     int8_t rssi;
+    int8_t snr;
     uint8_t hopCount;
+    uint8_t routePathLen;
+    uint8_t routePath[MAX_ROUTE_PATH];
     SensorDataPayload sensorData;
     ImuFatiguePayload fatigueImu;
     SafetyConditionPayload safetyCondition;
@@ -93,6 +96,10 @@ uint8_t observationRound = 0;
 
 LoRaRuntimeCfg gwRuntimeCfg;
 
+// Route path sementara dari paket terakhir yang diterima (diisi di handleReceivedPacket)
+static uint8_t  lastRxRoutePathLen = 0;
+static uint8_t  lastRxRoutePath[MAX_ROUTE_PATH] = {};
+
 void initLoRa();
 void initWiFi();
 void initMQTT();
@@ -101,14 +108,14 @@ void checkWiFi();
 void receivePackets();
 void handleReceivedPacket(const LoRaPacket& packet);
 void sendPacketCallback(const LoRaPacket& packet);
-void enqueueSensorData(const SensorDataPayload& data, uint8_t src, int8_t rssi, uint8_t hops);
-void enqueueFatigueImuData(const ImuFatiguePayload& data, uint8_t src, int8_t rssi, uint8_t hops);
-void enqueueSafetyConditionData(const SafetyConditionPayload& data, uint8_t src, int8_t rssi, uint8_t hops);
-void enqueueVehicleTelemetryData(const VehicleTelemetryPayload& data, uint8_t src, int8_t rssi, uint8_t hops);
+void enqueueSensorData(const SensorDataPayload& data, uint8_t src, int8_t rssi, int8_t snr, uint8_t hops);
+void enqueueFatigueImuData(const ImuFatiguePayload& data, uint8_t src, int8_t rssi, int8_t snr, uint8_t hops);
+void enqueueSafetyConditionData(const SafetyConditionPayload& data, uint8_t src, int8_t rssi, int8_t snr, uint8_t hops);
+void enqueueVehicleTelemetryData(const VehicleTelemetryPayload& data, uint8_t src, int8_t rssi, int8_t snr, uint8_t hops);
 void publishQueueItem(const MQTTQueueItem& item);
 void publishSensorQueueItem(const MQTTQueueItem& item, const char* name, uint32_t latency, bool latencyValid);
-void publishFatigueQueueItem(const MQTTQueueItem& item);
-void publishSafetyConditionQueueItem(const MQTTQueueItem& item);
+void publishFatigueQueueItem(const MQTTQueueItem& item, uint32_t latency, bool latencyValid);
+void publishSafetyConditionQueueItem(const MQTTQueueItem& item, uint32_t latency, bool latencyValid);
 void publishVehicleTelemetryQueueItem(const MQTTQueueItem& item);
 void sendTimeSyncPacket();
 void sendPendingFatigueStatus();
@@ -128,6 +135,23 @@ uint64_t getEpochMs64();
 uint32_t getEpochMsLow32();
 static void mqtt_event_handler(void*, esp_event_base_t, int32_t, void*);
 void TaskLoRa(void*);
+
+// Per-packet CSV logging: satu baris per paket yang diterima Gateway
+// Format: EPOCH_MS,NODE_ID,NODE_NAME,TYPE,SEQ,RSSI,SNR,HOPS,LATENCY_MS,SF,BW_KHZ
+void logPacketCSV(uint8_t srcId, const char* typeName, uint32_t seq,
+                  int8_t rssi, int8_t snr, uint8_t hops,
+                  uint32_t latencyMs, bool latencyValid) {
+    uint64_t epoch = getEpochMs64();
+    Serial.printf("[CSV] %lu,%u,%s,%s,%lu,%d,%d,%u,%s%lu,%d,%lu\n",
+                  (unsigned long)(epoch & 0xFFFFFFFF),
+                  srcId, getNodeName(srcId), typeName,
+                  (unsigned long)seq,
+                  rssi, snr, hops,
+                  latencyValid ? "" : "~",
+                  (unsigned long)latencyMs,
+                  gwRuntimeCfg.sf,
+                  (unsigned long)gwRuntimeCfg.bwKHz);
+}
 
 void setup() {
     Serial.begin(SERIAL_BAUD);
@@ -173,6 +197,18 @@ void setup() {
     }
 
     GWWebConfig::begin(WiFi.localIP().toString(), WiFi.softAPIP().toString(), gwRuntimeCfg);
+
+    // Register callback untuk START_TEST button di WebConfig UI
+    GWWebConfig::setStartTestCallback([](uint8_t sf, uint32_t bwKHz) {
+        StartTestPayload st;
+        st.sf = sf;
+        st.bwKHz = bwKHz;
+        LoRaPacket pkt = LoRaPacketHandler::createStartTestPacket(GATEWAY_ID, st);
+        sendPacketCallback(pkt);
+        delay(500);
+        sendPacketCallback(pkt);  // 2x untuk reliability
+        Serial.printf("[WebUI] START_TEST broadcast: SF=%d BW=%lukHz\n", sf, (unsigned long)bwKHz);
+    });
 
     resetQoSStats();
     printStatus();
@@ -326,7 +362,7 @@ void initNTP() {
     }
 
     Serial.println("[NTP] Syncing");
-    configTime(0, 0, "pool.ntp.org", "time.nist.gov");
+    configTime(8 * 3600, 0, "pool.ntp.org", "time.nist.gov"); // Set ke UTC+8
 
     time_t now = 0;
     unsigned long start = millis();
@@ -488,6 +524,7 @@ void receivePackets() {
 
 void handleReceivedPacket(const LoRaPacket& packet) {
     int8_t rssi = rf95.lastRssi();
+    int8_t snr = rf95.lastSNR();
     Serial.printf("[RX] Type=%s Src=%s Dst=%s NextHop=%u RSSI=%d\n",
                   packetHandler.getPacketTypeName(packet.header.packetType),
                   getNodeName(packet.header.sourceID),
@@ -495,41 +532,81 @@ void handleReceivedPacket(const LoRaPacket& packet) {
                   packet.header.nextHop,
                   rssi);
 
-    switch (packet.header.packetType) {
+    // Duplicate detection untuk data packets
+    uint8_t ptype = packet.header.packetType;
+    static struct { uint8_t src; uint32_t seq; uint8_t type; unsigned long ts; bool valid; } _dupCache[64];
+    static uint8_t _dupIdx = 0;
+    if (ptype == PKT_TYPE_DATA || ptype == PKT_TYPE_FATIGUE_IMU ||
+        ptype == PKT_TYPE_SAFETY_CONDITION || ptype == PKT_TYPE_VEHICLE_TELEMETRY ||
+        ptype == PKT_TYPE_DIAGNOSTIC) {
+        unsigned long now = millis();
+        for (int i = 0; i < 64; i++) {
+            if (_dupCache[i].valid && _dupCache[i].src == packet.header.sourceID &&
+                _dupCache[i].seq == packet.header.sequenceNum &&
+                _dupCache[i].type == ptype && (now - _dupCache[i].ts) < 10000) {
+                Serial.printf("[DUP] Dropped src=%u seq=%u type=0x%02X\n",
+                              packet.header.sourceID, packet.header.sequenceNum, ptype);
+                return;
+            }
+        }
+        _dupCache[_dupIdx] = {packet.header.sourceID, packet.header.sequenceNum, ptype, now, true};
+        _dupIdx = (_dupIdx + 1) % 64;
+    }
+
+    switch (ptype) {
         case PKT_TYPE_DATA:
             if (packet.header.destinationID == GATEWAY_ID &&
                 packet.header.nextHop == NODE_ID) {
                 if (packet.header.payloadLength != sizeof(SensorDataPayload)) {
-                    Serial.println("[RX] Invalid sensor payload size");
+                    Serial.printf("[RX] Invalid sensor payload size: got=%u expected=%u\n",
+                                  packet.header.payloadLength, (unsigned)sizeof(SensorDataPayload));
                     break;
                 }
 
                 SensorDataPayload data;
                 memcpy(&data, packet.payload, sizeof(data));
-                enqueueSensorData(data, packet.header.sourceID, rssi, packet.header.hopCount);
+                lastRxRoutePathLen = packet.header.routePathLen;
+                memcpy(lastRxRoutePath, packet.header.routePath, MAX_ROUTE_PATH);
+                enqueueSensorData(data, packet.header.sourceID, rssi, snr, packet.header.hopCount);
+                { uint32_t lat = ntpSynced ? (getEpochMsLow32() - data.txTimestamp) : 0;
+                  logPacketCSV(packet.header.sourceID, "DATA", packet.header.sequenceNum,
+                              rssi, snr, packet.header.hopCount, lat, ntpSynced);
+                  updateNodeStats(packet.header.sourceID, getNodeName(packet.header.sourceID), lat, ntpSynced); }
             }
             break;
 
         case PKT_TYPE_FATIGUE_IMU:
             if (packet.header.destinationID == GATEWAY_ID &&
                 packet.header.nextHop == NODE_ID) {
-                if (packet.header.payloadLength != sizeof(ImuFatiguePayload)) {
-                    Serial.println("[RX] Invalid fatigue IMU payload size");
+                // Toleransi ukuran lama (tanpa buzzerActive=21) dan baru (dengan buzzerActive=22)
+                const uint16_t oldSize = sizeof(ImuFatiguePayload) - 1; // tanpa buzzerActive
+                const uint16_t newSize = sizeof(ImuFatiguePayload);     // dengan buzzerActive
+                if (packet.header.payloadLength != oldSize && packet.header.payloadLength != newSize) {
+                    Serial.printf("[RX] Invalid fatigue IMU payload size: got=%u expected=%u or %u\n",
+                                  packet.header.payloadLength, oldSize, newSize);
                     break;
                 }
 
                 ImuFatiguePayload data;
-                memcpy(&data, packet.payload, sizeof(data));
+                memset(&data, 0, sizeof(data)); // zero-init agar buzzerActive = 0 jika tidak ada
+                memcpy(&data, packet.payload, packet.header.payloadLength);
                 if (data.packetType != PKT_TYPE_FATIGUE_IMU) {
                     Serial.println("[RX] Invalid fatigue IMU packetType in payload");
                     break;
                 }
-                Serial.printf("[gateway RX IMU] nodeId=%u ts=%lu pitch=%.2f roll=%.2f\n",
+                Serial.printf("[gateway RX IMU] nodeId=%u ts=%lu pitch=%.2f roll=%.2f buzzer=%s\n",
                               data.nodeId,
                               (unsigned long)data.ts,
                               data.pitch100 / 100.0f,
-                              data.roll100 / 100.0f);
-                enqueueFatigueImuData(data, packet.header.sourceID, rssi, packet.header.hopCount);
+                              data.roll100 / 100.0f,
+                              data.buzzerActive ? "ON" : "OFF");
+                enqueueFatigueImuData(data, packet.header.sourceID, rssi, snr, packet.header.hopCount);
+                lastRxRoutePathLen = packet.header.routePathLen;
+                memcpy(lastRxRoutePath, packet.header.routePath, MAX_ROUTE_PATH);
+                { uint32_t lat = ntpSynced ? (getEpochMsLow32() - data.ts) : 0;
+                  logPacketCSV(packet.header.sourceID, "FATIGUE_IMU", packet.header.sequenceNum,
+                              rssi, snr, packet.header.hopCount, lat, ntpSynced);
+                  updateNodeStats(packet.header.sourceID, getNodeName(packet.header.sourceID), lat, ntpSynced); }
                 if (packet.header.sourceID == FATIGUE_NODE_ID && fatigueStatusPending) {
                     fatigueStatusReadyToSend = true;
                 }
@@ -554,7 +631,11 @@ void handleReceivedPacket(const LoRaPacket& packet) {
                               data.nodeId,
                               (unsigned long)data.ts,
                               data.flags);
-                enqueueSafetyConditionData(data, packet.header.sourceID, rssi, packet.header.hopCount);
+                enqueueSafetyConditionData(data, packet.header.sourceID, rssi, snr, packet.header.hopCount);
+                { uint32_t lat = ntpSynced ? (getEpochMsLow32() - data.ts) : 0;
+                  logPacketCSV(packet.header.sourceID, "SAFETY", packet.header.sequenceNum,
+                              rssi, snr, packet.header.hopCount, lat, ntpSynced);
+                  updateNodeStats(packet.header.sourceID, getNodeName(packet.header.sourceID), lat, ntpSynced); }
             }
             break;
 
@@ -573,7 +654,11 @@ void handleReceivedPacket(const LoRaPacket& packet) {
 
                 VehicleTelemetryPayload data;
                 memcpy(&data, packet.payload, sizeof(data));
-                enqueueVehicleTelemetryData(data, packet.header.sourceID, rssi, packet.header.hopCount);
+                enqueueVehicleTelemetryData(data, packet.header.sourceID, rssi, snr, packet.header.hopCount);
+                { uint32_t lat = ntpSynced ? (getEpochMsLow32() - data.txTimestamp) : 0;
+                  logPacketCSV(packet.header.sourceID, "VEHICLE", packet.header.sequenceNum,
+                              rssi, snr, packet.header.hopCount, lat, ntpSynced);
+                  updateNodeStats(packet.header.sourceID, getNodeName(packet.header.sourceID), lat, ntpSynced); }
             }
             break;
 
@@ -591,6 +676,47 @@ void handleReceivedPacket(const LoRaPacket& packet) {
 
         case PKT_TYPE_HELLO:
             aodv.handleHello(packet);
+            break;
+
+        case PKT_TYPE_DIAGNOSTIC:
+            if (packet.header.destinationID == GATEWAY_ID) {
+                if (packet.header.payloadLength == sizeof(DiscoveryDiagPayload)) {
+                    DiscoveryDiagPayload diag;
+                    memcpy(&diag, packet.payload, sizeof(diag));
+
+                    Serial.println("========================================");
+                    Serial.printf("[DIAG RX] Node %s -> target=%u\n",
+                                  getNodeName(diag.originNodeId),
+                                  diag.targetNodeId);
+                    Serial.printf("  RREQ at : %lu\n", (unsigned long)diag.rreqTimestamp);
+                    Serial.printf("  RREP at : %lu\n", (unsigned long)diag.rrepTimestamp);
+                    Serial.printf("  Duration: %lu ms\n", (unsigned long)diag.discoveryMs);
+                    Serial.printf("  Hops    : %u\n", diag.hopCount);
+                    Serial.printf("  Retries : %u\n", diag.retryCount);
+                    Serial.printf("  Result  : %s\n", diag.success ? "SUCCESS" : "FAILED");
+                    Serial.println("========================================");
+
+                    // Publish to MQTT
+                    if (mqttConnected && mqtt_client) {
+                        StaticJsonDocument<384> doc;
+                        doc["node_asal"] = diag.originNodeId;
+                        doc["node_name"] = getNodeName(diag.originNodeId);
+                        doc["target_rute"] = diag.targetNodeId;
+                        doc["rreq_at"] = diag.rreqTimestamp;
+                        doc["rrep_at"] = diag.rrepTimestamp;
+                        doc["discovery_ms"] = diag.discoveryMs;
+                        doc["hops"] = diag.hopCount;
+                        doc["retries"] = diag.retryCount;
+                        doc["success"] = diag.success;
+                        doc["rssi"] = rssi;
+
+                        char buf[384];
+                        serializeJson(doc, buf, sizeof(buf));
+                        esp_mqtt_client_publish(mqtt_client, MQTT_TOPIC_DIAGNOSTIC, buf, 0, 1, 0);
+                        Serial.printf("[MQTT] Published diagnostic -> %s\n", MQTT_TOPIC_DIAGNOSTIC);
+                    }
+                }
+            }
             break;
 
         default:
@@ -611,7 +737,7 @@ void sendPacketCallback(const LoRaPacket& packet) {
     }
 }
 
-void enqueueSensorData(const SensorDataPayload& data, uint8_t src, int8_t rssi, uint8_t hops) {
+void enqueueSensorData(const SensorDataPayload& data, uint8_t src, int8_t rssi, int8_t snr, uint8_t hops) {
     if (!mqttQueue) {
         return;
     }
@@ -620,7 +746,10 @@ void enqueueSensorData(const SensorDataPayload& data, uint8_t src, int8_t rssi, 
     item.kind = QUEUE_KIND_SENSOR;
     item.sourceNodeID = src;
     item.rssi = rssi;
+    item.snr = snr;
     item.hopCount = hops;
+    item.routePathLen = lastRxRoutePathLen;
+    memcpy(item.routePath, lastRxRoutePath, MAX_ROUTE_PATH);
     item.sensorData = data;
 
     if (xQueueSend(mqttQueue, &item, 10) != pdPASS) {
@@ -628,7 +757,7 @@ void enqueueSensorData(const SensorDataPayload& data, uint8_t src, int8_t rssi, 
     }
 }
 
-void enqueueFatigueImuData(const ImuFatiguePayload& data, uint8_t src, int8_t rssi, uint8_t hops) {
+void enqueueFatigueImuData(const ImuFatiguePayload& data, uint8_t src, int8_t rssi, int8_t snr, uint8_t hops) {
     if (!mqttQueue) {
         return;
     }
@@ -637,7 +766,10 @@ void enqueueFatigueImuData(const ImuFatiguePayload& data, uint8_t src, int8_t rs
     item.kind = QUEUE_KIND_FATIGUE_IMU;
     item.sourceNodeID = src;
     item.rssi = rssi;
+    item.snr = snr;
     item.hopCount = hops;
+    item.routePathLen = lastRxRoutePathLen;
+    memcpy(item.routePath, lastRxRoutePath, MAX_ROUTE_PATH);
     item.fatigueImu = data;
 
     if (xQueueSend(mqttQueue, &item, 10) != pdPASS) {
@@ -645,7 +777,7 @@ void enqueueFatigueImuData(const ImuFatiguePayload& data, uint8_t src, int8_t rs
     }
 }
 
-void enqueueSafetyConditionData(const SafetyConditionPayload& data, uint8_t src, int8_t rssi, uint8_t hops) {
+void enqueueSafetyConditionData(const SafetyConditionPayload& data, uint8_t src, int8_t rssi, int8_t snr, uint8_t hops) {
     if (!mqttQueue) {
         return;
     }
@@ -654,6 +786,7 @@ void enqueueSafetyConditionData(const SafetyConditionPayload& data, uint8_t src,
     item.kind = QUEUE_KIND_SAFETY_CONDITION;
     item.sourceNodeID = src;
     item.rssi = rssi;
+    item.snr = snr;
     item.hopCount = hops;
     item.safetyCondition = data;
 
@@ -662,7 +795,7 @@ void enqueueSafetyConditionData(const SafetyConditionPayload& data, uint8_t src,
     }
 }
 
-void enqueueVehicleTelemetryData(const VehicleTelemetryPayload& data, uint8_t src, int8_t rssi, uint8_t hops) {
+void enqueueVehicleTelemetryData(const VehicleTelemetryPayload& data, uint8_t src, int8_t rssi, int8_t snr, uint8_t hops) {
     if (!mqttQueue) {
         return;
     }
@@ -671,6 +804,7 @@ void enqueueVehicleTelemetryData(const VehicleTelemetryPayload& data, uint8_t sr
     item.kind = QUEUE_KIND_VEHICLE_TELEMETRY;
     item.sourceNodeID = src;
     item.rssi = rssi;
+    item.snr = snr;
     item.hopCount = hops;
     item.vehicleTelemetry = data;
 
@@ -718,9 +852,9 @@ void publishQueueItem(const MQTTQueueItem& item) {
     if (item.kind == QUEUE_KIND_SENSOR) {
         publishSensorQueueItem(item, name, latency, latencyValid);
     } else if (item.kind == QUEUE_KIND_FATIGUE_IMU) {
-        publishFatigueQueueItem(item);
+        publishFatigueQueueItem(item, latency, latencyValid);
     } else if (item.kind == QUEUE_KIND_SAFETY_CONDITION) {
-        publishSafetyConditionQueueItem(item);
+        publishSafetyConditionQueueItem(item, latency, latencyValid);
     } else if (item.kind == QUEUE_KIND_VEHICLE_TELEMETRY) {
         publishVehicleTelemetryQueueItem(item);
     }
@@ -741,9 +875,18 @@ void publishSensorQueueItem(const MQTTQueueItem& item, const char* name, uint32_
         eventTimestamp = (uint32_t)(millis() / 1000UL);
     }
 
+    struct tm timeinfo;
+    time_t txSec = eventTimestamp;
+    localtime_r(&txSec, &timeinfo);
+    char timeStr[32];
+    uint32_t txMsec = txEpochMs64 > 0 ? (txEpochMs64 % 1000) : 0;
+    snprintf(timeStr, sizeof(timeStr), "%02d:%02d:%02d:%03d",
+             timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec, txMsec);
+
     StaticJsonDocument<512> doc;
     doc["nodeId"] = name;
-    doc["timestamp"] = eventTimestamp;
+    doc["ts"] = timeStr;
+    doc["epoch"] = eventTimestamp;
     doc["hopCount"] = item.hopCount;
     doc["rssi"] = item.rssi;
     if (latencyValid) {
@@ -762,6 +905,19 @@ void publishSensorQueueItem(const MQTTQueueItem& item, const char* name, uint32_
     accel["z"] = item.sensorData.imu.accelZ;
 
     doc["battery"] = item.sensorData.batteryVoltage;
+    doc["rssi"] = item.rssi;
+    doc["snr"] = item.snr;
+    doc["route_disc_ms"] = item.sensorData.routeDiscMs;
+    doc["route_hops"] = item.sensorData.routeHops;
+
+    // Route path: array nama node yang dilalui paket
+    JsonArray rp = doc.createNestedArray("route_path");
+    uint8_t rpLen = item.routePathLen;
+    if (rpLen > MAX_ROUTE_PATH) rpLen = MAX_ROUTE_PATH;
+    for (uint8_t i = 0; i < rpLen; i++) {
+        rp.add(getNodeName(item.routePath[i]));
+    }
+    rp.add("GATEWAY");  // Gateway selalu jadi tujuan akhir
 
     String json;
     serializeJson(doc, json);
@@ -778,17 +934,51 @@ void publishSensorQueueItem(const MQTTQueueItem& item, const char* name, uint32_
     }
 }
 
-void publishFatigueQueueItem(const MQTTQueueItem& item) {
-    StaticJsonDocument<256> doc;
+void publishFatigueQueueItem(const MQTTQueueItem& item, uint32_t latency, bool latencyValid) {
+    StaticJsonDocument<384> doc;
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    uint64_t currentMs = (uint64_t)tv.tv_sec * 1000ULL + (tv.tv_usec / 1000);
+    uint64_t txMs = currentMs;
+    if (latencyValid) {
+        txMs = currentMs - latency;
+    }
+    time_t txSec = txMs / 1000;
+    uint32_t txMsec = txMs % 1000;
+    struct tm timeinfo;
+    localtime_r(&txSec, &timeinfo);
+    char timeStr[32];
+    snprintf(timeStr, sizeof(timeStr), "%02d:%02d:%02d:%03d",
+             timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec, txMsec);
+
     doc["nodeId"] = item.fatigueImu.nodeId;
-    doc["ts"] = item.fatigueImu.ts;
+    doc["ts"] = timeStr;
+    doc["epoch"] = item.fatigueImu.ts; // untuk kalkulasi internal
     doc["pitch"] = item.fatigueImu.pitch100 / 100.0f;
     doc["roll"] = item.fatigueImu.roll100 / 100.0f;
     doc["f_gx"] = item.fatigueImu.gx1000 / 1000.0f;
     doc["f_gy"] = item.fatigueImu.gy1000 / 1000.0f;
     doc["f_gz"] = item.fatigueImu.gz1000 / 1000.0f;
+    doc["hopCount"] = item.hopCount;
+    doc["rssi"] = item.rssi;
+    doc["snr"] = item.snr;
+    doc["route_disc_ms"] = item.fatigueImu.routeDiscMs;
+    doc["route_hops"] = item.fatigueImu.routeHops;
+    doc["status_buzzer"] = item.fatigueImu.buzzerActive ? "ON" : "OFF";
 
-    char json[256];
+    // Route path: array nama node yang dilalui paket
+    JsonArray rp = doc.createNestedArray("route_path");
+    uint8_t rpLen = item.routePathLen;
+    if (rpLen > MAX_ROUTE_PATH) rpLen = MAX_ROUTE_PATH;
+    for (uint8_t i = 0; i < rpLen; i++) {
+        rp.add(getNodeName(item.routePath[i]));
+    }
+    rp.add("GATEWAY");  // Gateway selalu jadi tujuan akhir
+    if (latencyValid) {
+        doc["latency_ms"] = latency;
+    }
+
+    char json[384];
     size_t len = serializeJson(doc, json, sizeof(json));
 
     int id = esp_mqtt_client_publish(
@@ -811,12 +1001,28 @@ void publishFatigueQueueItem(const MQTTQueueItem& item) {
     }
 }
 
-void publishSafetyConditionQueueItem(const MQTTQueueItem& item) {
-    StaticJsonDocument<256> doc;
+void publishSafetyConditionQueueItem(const MQTTQueueItem& item, uint32_t latency, bool latencyValid) {
+    StaticJsonDocument<384> doc;
     const uint8_t flags = item.safetyCondition.flags;
 
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    uint64_t currentMs = (uint64_t)tv.tv_sec * 1000ULL + (tv.tv_usec / 1000);
+    uint64_t txMs = currentMs;
+    if (latencyValid) {
+        txMs = currentMs - latency;
+    }
+    time_t txSec = txMs / 1000;
+    uint32_t txMsec = txMs % 1000;
+    struct tm timeinfo;
+    localtime_r(&txSec, &timeinfo);
+    char timeStr[32];
+    snprintf(timeStr, sizeof(timeStr), "%02d:%02d:%02d:%03d",
+             timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec, txMsec);
+
     doc["nodeId"] = item.safetyCondition.nodeId;
-    doc["ts"] = item.safetyCondition.ts;
+    doc["ts"] = timeStr;
+    doc["epoch"] = item.safetyCondition.ts;
     doc["gpsValid"] = (flags & FLAG_GPS_VALID) != 0;
     doc["drActive"] = (flags & FLAG_DR_ACTIVE) != 0;
     doc["rolloverRisk"] = (flags & FLAG_ROLLOVER_RISK) != 0;
@@ -824,8 +1030,16 @@ void publishSafetyConditionQueueItem(const MQTTQueueItem& item) {
     doc["harshBraking"] = (flags & FLAG_HARSH_BRAKE) != 0;
     doc["overspeed"] = (flags & FLAG_OVERSPEED) != 0;
     doc["flags"] = flags;
+    doc["hopCount"] = item.hopCount;
+    doc["rssi"] = item.rssi;
+    doc["snr"] = item.snr;
+    doc["route_disc_ms"] = item.safetyCondition.routeDiscMs;
+    doc["route_hops"] = item.safetyCondition.routeHops;
+    if (latencyValid) {
+        doc["latency_ms"] = latency;
+    }
 
-    char json[256];
+    char json[384];
     size_t len = serializeJson(doc, json, sizeof(json));
 
     int id = esp_mqtt_client_publish(
@@ -850,6 +1064,21 @@ void publishSafetyConditionQueueItem(const MQTTQueueItem& item) {
 
 void publishVehicleTelemetryQueueItem(const MQTTQueueItem& item) {
     StaticJsonDocument<1024> doc;
+
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    uint64_t currentMs = (uint64_t)tv.tv_sec * 1000ULL + (tv.tv_usec / 1000);
+    time_t txSec = currentMs / 1000;
+    uint32_t txMsec = currentMs % 1000;
+    struct tm timeinfo;
+    localtime_r(&txSec, &timeinfo);
+    char timeStr[32];
+    snprintf(timeStr, sizeof(timeStr), "%02d:%02d:%02d:%03d",
+             timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec, txMsec);
+
+    doc["ts"] = timeStr;
+    doc["epoch"] = (uint32_t)(currentMs & 0xFFFFFFFF); // fallback
+
     doc["lat"] = item.vehicleTelemetry.latitude;
     doc["lon"] = item.vehicleTelemetry.longitude;
     doc["headingDeg"] = item.vehicleTelemetry.headingDeg;
@@ -883,6 +1112,10 @@ void publishVehicleTelemetryQueueItem(const MQTTQueueItem& item) {
     doc["harshBraking"] = item.vehicleTelemetry.harshBraking;
     doc["overspeed"] = item.vehicleTelemetry.overspeed;
     doc["note"] = "OK";
+    doc["rssi"] = item.rssi;
+    doc["snr"] = item.snr;
+    doc["route_disc_ms"] = item.vehicleTelemetry.routeDiscMs;
+    doc["route_hops"] = item.vehicleTelemetry.routeHops;
 
     String json;
     serializeJson(doc, json);
@@ -1164,10 +1397,19 @@ void handleSerialCLI() {
         printQoSStats();
     } else if (cmd == "CSV") {
         printCSVStats();
-    } else if (cmd == "RESET" || cmd == "START") {
+    } else if (cmd == "START") {
         observationRound++;
         resetQoSStats();
         Serial.println("[CLI] New observation period started");
+    } else if (cmd == "RESET") {
+        // Reset NVRAM config ke default config.h
+        Preferences prefs;
+        prefs.begin("lora-cfg", false);
+        prefs.clear();
+        prefs.end();
+        Serial.println("[CLI] NVRAM config cleared. Rebooting in 2s...");
+        delay(2000);
+        ESP.restart();
     } else if (cmd == "STATUS") {
         printStatus();
     } else if (cmd == "SYNC") {
@@ -1184,15 +1426,44 @@ void handleSerialCLI() {
     } else if (cmd == "NORMAL") {
         requestFatigueStatus(FATIGUE_STATUS_NORMAL);
     } else if (cmd == "HELP") {
-        Serial.println("STATS      - Print QoS table");
-        Serial.println("CSV        - Print CSV stats");
-        Serial.println("RESET      - Reset QoS counters");
-        Serial.println("STATUS     - Print gateway status");
-        Serial.println("SYNC       - Send time sync");
-        Serial.println("ROUTE      - Print route discovery stats");
-        Serial.println("LELAH      - Send LELAH status to lora_saenab");
-        Serial.println("TERTIDUR   - Send TERTIDUR status to lora_saenab");
-        Serial.println("NORMAL     - Send NORMAL status to lora_saenab");
+        Serial.println("STATS        - Print QoS table");
+        Serial.println("CSV          - Print CSV stats");
+        Serial.println("START        - Reset QoS counters (new observation)");
+        Serial.println("RESET        - Reset NVRAM config & reboot (factory default)");
+        Serial.println("STATUS       - Print gateway status");
+        Serial.println("SYNC         - Send time sync");
+        Serial.println("ROUTE        - Print route discovery stats");
+        Serial.println("LELAH        - Send LELAH status to lora_saenab");
+        Serial.println("TERTIDUR     - Send TERTIDUR status to lora_saenab");
+        Serial.println("NORMAL       - Send NORMAL status to lora_saenab");
+        Serial.println("TEST SF7 BW125 - Broadcast START_TEST (semua node reboot SF/BW baru)");
+    } else if (cmd.startsWith("TEST ")) {
+        // Parse: TEST SF7 BW125
+        uint8_t newSF = 7;
+        uint32_t newBW = 125;
+        int sfIdx = cmd.indexOf("SF");
+        int bwIdx = cmd.indexOf("BW");
+        if (sfIdx >= 0) newSF = cmd.substring(sfIdx + 2).toInt();
+        if (bwIdx >= 0) newBW = cmd.substring(bwIdx + 2).toInt();
+        newSF = constrain(newSF, 7, 12);
+        newBW = (newBW == 250) ? 250 : 125;
+
+        Serial.printf("[CLI] Broadcasting START_TEST: SF=%d BW=%lukHz\n", newSF, (unsigned long)newBW);
+
+        // 1. Broadcast START_TEST packet ke semua node
+        StartTestPayload st;
+        st.sf = newSF;
+        st.bwKHz = newBW;
+        LoRaPacket pkt = LoRaPacketHandler::createStartTestPacket(GATEWAY_ID, st);
+        sendPacketCallback(pkt);
+        delay(500);
+        sendPacketCallback(pkt);  // Kirim 2x untuk reliability
+
+        // 2. Simpan config baru di Gateway juga, lalu reboot
+        Serial.println("[CLI] Gateway akan reboot dengan parameter baru dalam 3 detik...");
+        GWWebConfig::saveTestConfig(newSF, newBW);
+        delay(3000);
+        ESP.restart();
     } else if (cmd.length() > 0) {
         Serial.printf("[CLI] Unknown command: %s\n", cmd.c_str());
     }

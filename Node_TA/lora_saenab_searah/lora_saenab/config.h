@@ -1,7 +1,7 @@
 /*
  * LoRa Mesh Node Configuration
  * Project: PERANCANGAN SISTEM KOMUNIKASI DATA IOT BERBASIS LORA MESH AD HOC
- * Platform: ESP32-S3 + RFM95
+ * Platform: ESP32-C3 Super Mini + RFM95
  * Protocol: AODV Routing
  */
 
@@ -15,26 +15,27 @@
 #define LORA_BANDWIDTH         125E3   // 125 kHz (ganti ke 250E3 untuk BW=250 kHz)
 #define LORA_SPREADING_FACTOR  7       // SF7 (ganti 7-12 untuk skenario 4)
 #define LORA_CODING_RATE       5       // 4/5 (tetap untuk semua skenario)
-#define LORA_TX_POWER          20      // dBm (PA_BOOST)
+#define LORA_TX_POWER          14      // Turunkan ke 14dBm agar tidak restart/brownout saat WiFi nyala
 #define LORA_USE_RFO           false   // false = PA_BOOST, true = RFO
 #define LORA_PREAMBLE_LENGTH   8       // default
 #define LORA_DEBUG_DUMP_REGS   false   // true untuk dump register saat boot
 
 // ================================================================
-// ESP32 PIN CONFIGURATION (SPI-B/HSPI untuk RFM95)
+// ESP32-C3 Super Mini PIN CONFIGURATION untuk RFM95
 // ================================================================
-#define LORA_SCK_PIN        42       // SPI-B SCK
-#define LORA_MOSI_PIN       41       // SPI-B MOSI
-#define LORA_MISO_PIN       40       // SPI-B MISO
-#define LORA_CS_PIN         5        // LoRa CS
-#define LORA_RST_PIN        7        // LoRa reset (output)
+#define LORA_SCK_PIN        4        // SPI SCK
+#define LORA_MOSI_PIN       6        // SPI MOSI
+#define LORA_MISO_PIN       5        // SPI MISO
+#define LORA_CS_PIN         7        // LoRa SS/CS
+#define LORA_RST_PIN        10       // LoRa reset (output)
 #define LORA_DIO0_PIN       1        // LoRa DIO0/IRQ (input)
 
 // ================================================================
 // NETWORK CONFIGURATION
 // ================================================================
 // Node IDs: 1-5 untuk mesh nodes, 0 untuk gateway
-// SET NODE_ID DI SKETCH (LoRa_Mesh_Node.ino)
+#define NODE_ID             4
+#define NODE_NAME           "lora_saenab"
 #define GATEWAY_ID          0
 #define BROADCAST_ADDR      255
 
@@ -61,20 +62,31 @@
 #define PKT_TYPE_RERR       0x04     // Route Error
 #define PKT_TYPE_HELLO      0x05     // Hello message
 #define PKT_TYPE_TIMESYNC   0x06     // Time Sync (Gateway -> Nodes, untuk akurasi latensi)
-#define PKT_TYPE_FATIGUE_IMU        0x31 // IMU fatigue payload (Node -> Gateway)
-#define PKT_TYPE_FATIGUE_STATUS     0x32 // Alarm/status command (Gateway -> Node)
-#define PKT_TYPE_SAFETY_CONDITION   0x41 // Safety condition flags (Node -> Gateway)
-#define PKT_TYPE_VEHICLE_TELEMETRY  0x09 // BNO055 + GPS + safety payload (Node -> Gateway)
+#define PKT_TYPE_FATIGUE_IMU    0x31 // IMU fatigue payload (Node -> Gateway)
+#define PKT_TYPE_FATIGUE_STATUS 0x32 // Alarm/status command (Gateway -> Node)
+#define PKT_TYPE_SAFETY_CONDITION 0x41 // Safety condition flags (Node -> Gateway)
+#define PKT_TYPE_VEHICLE_TELEMETRY 0x09 // Legacy payload forwarding compatibility
 #define PKT_TYPE_DIAGNOSTIC         0x0A // Route discovery diagnostic (Node -> Gateway)
 #define PKT_TYPE_START_TEST         0x0B // Start test command (Gateway -> Nodes, broadcast)
 
 // ================================================================
 // DATA COLLECTION PARAMETERS
-// Sesuai skenario pengujian skripsi 3.3.4.3 (QoS/PDR/Latensi)
+// Node custom lora_saenab mengirim data IMU fatigue setiap 500 ms
 // ================================================================
-#define DATA_SEND_INTERVAL  3000     // 3 detik - interval kirim sensor (sesuai skripsi)
-#define GPS_UPDATE_INTERVAL 100      // 100 ms - update GPS dummy data
-#define IMU_UPDATE_INTERVAL 100      // 100 ms - update IMU dummy data
+#define DATA_SEND_INTERVAL  3000      // Referensi interval pengiriman data
+#define GPS_UPDATE_INTERVAL 100      // 100 ms - update GPS data
+#define IMU_UPDATE_INTERVAL 100      // 100 ms - update IMU data
+#define IMU_PUBLISH_INTERVAL_MS 3000UL // Setel ke 3 detik sesuai permintaan
+#define STATUS_PRINT_INTERVAL_MS 60000UL
+#define GYRO_EMA_ALPHA      0.2f
+
+// ================================================================
+// MODULE PIN & BEHAVIOR CONFIGURATION
+// ================================================================
+#define BUZZER_PIN          3
+#define BUZZER_ACTIVE_HIGH  1
+#define I2C_SDA_PIN         8
+#define I2C_SCL_PIN         9
 
 // ================================================================
 // DEBUG CONFIGURATION

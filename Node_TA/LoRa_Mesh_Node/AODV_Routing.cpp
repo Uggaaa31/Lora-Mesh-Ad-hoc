@@ -34,6 +34,10 @@ void AODVRouting::begin() {
     // Inisialisasi statistik route discovery (Skenario 2)
     routeDiscoverySuccess = 0;
     routeDiscoveryFail = 0;
+    for (int i = 0; i < MAX_NODES; i++) {
+        lastSuccessfulDiscoveryMs[i] = 0;
+        lastSuccessfulDiscoveryHops[i] = 0;
+    }
     
     Serial.println("AODV Routing initialized for Node " + String(myNodeID));
 }
@@ -43,7 +47,7 @@ void AODVRouting::update() {
     
     // Send periodic hello messages
     // Send periodic hello messages
-    // Add Random Jitter: ±20% of interval
+    // Add Random Jitter: Â±20% of interval
     static unsigned long nextHelloTime = millis() + random(2000, 10000); // Initial random delay
     if (now > nextHelloTime) {
         sendHelloMessage();
@@ -90,6 +94,18 @@ uint8_t AODVRouting::getNextHop(uint8_t destination) {
         routingTable[idx].status = ROUTE_INVALID;
     }
     return 0;  // No route
+}
+
+uint8_t AODVRouting::getRouteHopCount(uint8_t destination) {
+    int idx = findRouteIndex(destination);
+    if (idx >= 0 && routingTable[idx].status == ROUTE_VALID) {
+        unsigned long now = millis();
+        if (now - routingTable[idx].timestamp < routingTable[idx].lifetime) {
+            return routingTable[idx].hopCount;
+        }
+        routingTable[idx].status = ROUTE_INVALID;
+    }
+    return 0;
 }
 
 // Add or update route
@@ -304,6 +320,24 @@ void AODVRouting::retryRREQ() {
                 } else {
                     pendingRREQs[i].active = false;
                     routeDiscoveryFail++;
+
+                    // Emit diagnostic payload (GAGAL)
+                    lastDiagResult = {};
+                    lastDiagResult.originNodeId = myNodeID;
+                    lastDiagResult.targetNodeId = pendingRREQs[i].destinationID;
+                    if (epochOffsetPtr) {
+                        lastDiagResult.rreqTimestamp = (uint32_t)(pendingRREQs[i].rreqSentTime) + *epochOffsetPtr;
+                        lastDiagResult.rrepTimestamp = 0;
+                    } else {
+                        lastDiagResult.rreqTimestamp = (uint32_t)(pendingRREQs[i].rreqSentTime);
+                        lastDiagResult.rrepTimestamp = 0;
+                    }
+                    lastDiagResult.discoveryMs = (uint32_t)(millis() - pendingRREQs[i].rreqSentTime);
+                    lastDiagResult.hopCount = 0;
+                    lastDiagResult.retryCount = pendingRREQs[i].retryCount;
+                    lastDiagResult.success = 0;
+                    hasDiagResult = true;
+                    if (onDiagnosticReady) { onDiagnosticReady(lastDiagResult); }
                     Serial.printf("RREQ failed for dest=%d after %d retries | [ROUTE] OK=%d GAGAL=%d\n",
                                  pendingRREQs[i].destinationID, RREQ_RETRIES,
                                  routeDiscoverySuccess, routeDiscoveryFail);
@@ -423,6 +457,28 @@ void AODVRouting::handleRREP(const LoRaPacket& packet) {
             if (pendingRREQs[i].active && pendingRREQs[i].destinationID == rrep.destinationID) {
                 unsigned long discoveryTime = millis() - pendingRREQs[i].rreqSentTime;
                 routeDiscoverySuccess++;
+
+                // Emit diagnostic payload
+                lastDiagResult = {};
+                lastDiagResult.originNodeId = myNodeID;
+                lastDiagResult.targetNodeId = rrep.destinationID;
+                if (epochOffsetPtr) {
+                    lastDiagResult.rreqTimestamp = (uint32_t)(pendingRREQs[i].rreqSentTime) + *epochOffsetPtr;
+                    lastDiagResult.rrepTimestamp = (uint32_t)millis() + *epochOffsetPtr;
+                } else {
+                    lastDiagResult.rreqTimestamp = (uint32_t)(pendingRREQs[i].rreqSentTime);
+                    lastDiagResult.rrepTimestamp = (uint32_t)millis();
+                }
+                lastDiagResult.discoveryMs = discoveryTime;
+                lastDiagResult.hopCount = rrep.hopCount + 1;
+                lastDiagResult.retryCount = pendingRREQs[i].retryCount;
+                lastDiagResult.success = 1;
+                hasDiagResult = true;
+                if (rrep.destinationID < MAX_NODES) {
+                    lastSuccessfulDiscoveryMs[rrep.destinationID] = discoveryTime;
+                    lastSuccessfulDiscoveryHops[rrep.destinationID] = rrep.hopCount + 1;
+                }
+                if (onDiagnosticReady) { onDiagnosticReady(lastDiagResult); }
                 Serial.printf("[AODV] Route discovery time -> dest=%d: %lu ms (hops=%d) | [ROUTE] OK=%d GAGAL=%d\n",
                              rrep.destinationID, discoveryTime, rrep.hopCount + 1,
                              routeDiscoverySuccess, routeDiscoveryFail);
@@ -630,4 +686,16 @@ int AODVRouting::findFreePendingSlot() {
         }
     }
     return -1;
+}
+
+bool AODVRouting::getLastSuccessfulDiscovery(uint8_t destination, uint32_t& discoveryMs, uint8_t& hops) {
+    if (destination >= MAX_NODES) {
+        return false;
+    }
+    if (lastSuccessfulDiscoveryHops[destination] == 0) {
+        return false;
+    }
+    discoveryMs = lastSuccessfulDiscoveryMs[destination];
+    hops = lastSuccessfulDiscoveryHops[destination];
+    return true;
 }
