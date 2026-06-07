@@ -25,9 +25,10 @@ const AUTO_DEFAULT_MAX_ROUTE_FAIL = Number.parseInt(process.env.AUTO_DEFAULT_MAX
 const MANUAL_DEFAULT_DURATION_MS = Number.parseInt(process.env.MANUAL_DEFAULT_DURATION_MS || "300000", 10);
 const CSV_DELIMITER = process.env.CSV_DELIMITER || ";";
 const CSV_INCLUDE_BOM = process.env.CSV_INCLUDE_BOM !== "false";
+const SEQ_REORDER_TOLERANCE = Number.parseInt(process.env.SEQ_REORDER_TOLERANCE || "16", 10);
 
 const config = {
-  mqttUri: process.env.MQTT_URI || "wss://mqtt.aistrack.site:443/",
+  mqttUri: process.env.MQTT_URI || "wss://mqtt.aispektra.com:443/",
   mqttRejectUnauthorized: process.env.MQTT_REJECT_UNAUTHORIZED !== "false",
   mqttUsername: process.env.MQTT_USERNAME || "",
   mqttPassword: process.env.MQTT_PASSWORD || "",
@@ -65,6 +66,7 @@ const state = {
   events: [],
   routeEvents: [],
   gatewayStatusEvents: [],
+  lastPayloadTsByStream: {},
   latestByNode: {},
   sessions: [],
   activeSession: null,
@@ -121,6 +123,38 @@ function num(value) {
   return null;
 }
 
+function parseSeq(value) {
+  const n = num(value);
+  if (n === null || !Number.isFinite(n)) {
+    return null;
+  }
+  const i = Math.trunc(n);
+  if (i < 0 || i > 0xFFFFFFFF) {
+    return null;
+  }
+  return i;
+}
+
+function extractSeq(payload) {
+  if (!payload || typeof payload !== "object") {
+    return null;
+  }
+  const candidates = [
+    payload.seq,
+    payload.sequence,
+    payload.sequenceNum,
+    payload.seq_num,
+    payload.seqNo
+  ];
+  for (const value of candidates) {
+    const seq = parseSeq(value);
+    if (seq !== null) {
+      return seq;
+    }
+  }
+  return null;
+}
+
 function resolveNodeNameById(nodeId) {
   const n = Number.parseInt(String(nodeId), 10);
   if (!Number.isFinite(n)) {
@@ -132,6 +166,7 @@ function resolveNodeNameById(nodeId) {
 function mkNodeStats() {
   return {
     received: 0,
+    receivedRaw: 0,
     firstPacketAt: 0,
     lastPacketAt: 0,
     latencySum: 0,
@@ -145,7 +180,8 @@ function mkNodeStats() {
     rssiSum: 0,
     rssiCount: 0,
     snrSum: 0,
-    snrCount: 0
+    snrCount: 0,
+    seqByKind: {}
   };
 }
 
@@ -154,6 +190,103 @@ function ensureNodeStats(map, nodeName) {
     map[nodeName] = mkNodeStats();
   }
   return map[nodeName];
+}
+
+function mkSeqKindStats(seq) {
+  return {
+    segmentFirstSeq: seq,
+    segmentLastSeq: seq,
+    segmentUnique: new Set([seq]),
+    expectedTotal: 0,
+    uniqueTotal: 0,
+    segmentCount: 0,
+    rollbackCount: 0,
+    lastSeq: seq
+  };
+}
+
+function finalizeSeqSegment(seqStats) {
+  if (!seqStats || seqStats.segmentFirstSeq === null || seqStats.segmentLastSeq === null) {
+    return;
+  }
+  seqStats.expectedTotal += (seqStats.segmentLastSeq - seqStats.segmentFirstSeq + 1);
+  seqStats.uniqueTotal += seqStats.segmentUnique.size;
+  seqStats.segmentCount += 1;
+}
+
+function isSeqRollback(lastSeq, seq) {
+  return (seq + SEQ_REORDER_TOLERANCE) < lastSeq;
+}
+
+function applySeqToNodeStats(nodeStats, kind, seq) {
+  if (!nodeStats || !kind || seq === null) {
+    return false;
+  }
+
+  if (!nodeStats.seqByKind[kind]) {
+    nodeStats.seqByKind[kind] = mkSeqKindStats(seq);
+    return true;
+  }
+
+  const seqStats = nodeStats.seqByKind[kind];
+  if (isSeqRollback(seqStats.lastSeq, seq)) {
+    // Node reboot/rollback: tutup segmen lama lalu mulai segmen baru.
+    finalizeSeqSegment(seqStats);
+    seqStats.rollbackCount += 1;
+    seqStats.segmentFirstSeq = seq;
+    seqStats.segmentLastSeq = seq;
+    seqStats.segmentUnique = new Set([seq]);
+    seqStats.lastSeq = seq;
+    return true;
+  }
+
+  if (seq < seqStats.segmentFirstSeq) {
+    seqStats.segmentFirstSeq = seq;
+  }
+  if (seq > seqStats.segmentLastSeq) {
+    seqStats.segmentLastSeq = seq;
+  }
+  seqStats.segmentUnique.add(seq);
+  seqStats.lastSeq = seq;
+  return true;
+}
+
+function getSeqTotalsForNode(nodeStats) {
+  if (!nodeStats || !nodeStats.seqByKind) {
+    return {
+      enabled: false,
+      expected: 0,
+      receivedUnique: 0,
+      segmentCount: 0,
+      rollbackCount: 0
+    };
+  }
+
+  let expected = 0;
+  let receivedUnique = 0;
+  let segmentCount = 0;
+  let rollbackCount = 0;
+  let enabled = false;
+
+  for (const seqStats of Object.values(nodeStats.seqByKind)) {
+    if (!seqStats) continue;
+    enabled = true;
+    const segmentExpected = seqStats.segmentFirstSeq !== null && seqStats.segmentLastSeq !== null
+      ? (seqStats.segmentLastSeq - seqStats.segmentFirstSeq + 1)
+      : 0;
+    expected += seqStats.expectedTotal + segmentExpected;
+    receivedUnique += seqStats.uniqueTotal + seqStats.segmentUnique.size;
+    segmentCount += seqStats.segmentCount + 1;
+    rollbackCount += seqStats.rollbackCount;
+  }
+
+  return {
+    enabled,
+    expected,
+    receivedUnique,
+    segmentCount,
+    rollbackCount
+  };
 }
 
 function mkRouteHopStats() {
@@ -188,9 +321,15 @@ function summarizeSession(session) {
     const nodeDurationMs = s.firstPacketAt > 0
       ? Math.max(0, (session.endedAt || now) - s.firstPacketAt)
       : durationMs;
-    // Tambahkan +1 karena paket pertama dihitung pada detik ke-0 (fencepost error)
-    const expected = Math.max(1, Math.floor(nodeDurationMs / session.intervalMs) + 1);
-    const pdr = Math.min(100, (s.received / expected) * 100);
+    // Fallback lama berbasis waktu (dipakai bila seq belum tersedia)
+    const expectedByTime = Math.max(1, Math.floor(nodeDurationMs / session.intervalMs) + 1);
+    const seqTotals = getSeqTotalsForNode(s);
+    const useSeqMethod = seqTotals.enabled && seqTotals.expected > 0;
+    const expected = useSeqMethod ? seqTotals.expected : expectedByTime;
+    const receivedForPdr = useSeqMethod
+      ? Math.min(seqTotals.receivedUnique, expected)
+      : s.received;
+    const pdr = Math.min(100, (receivedForPdr / expected) * 100);
     const plr = Math.max(0, 100 - pdr);
     let latencyAvg = s.latencyCount > 0 ? s.latencySum / s.latencyCount : null;
 
@@ -208,10 +347,14 @@ function summarizeSession(session) {
 
     return {
       node,
-      received: s.received,
+      received: receivedForPdr,
+      receivedRaw: s.receivedRaw || s.received,
       expected,
       pdr,
       plr,
+      expectedMethod: useSeqMethod ? "sequence" : "time",
+      seqSegments: useSeqMethod ? seqTotals.segmentCount : 0,
+      seqRollbacks: useSeqMethod ? seqTotals.rollbackCount : 0,
       latencyAvg,
       latencyMin: Number.isFinite(s.latencyMin) ? s.latencyMin : null,
       latencyMax: s.latencyCount > 0 ? s.latencyMax : null,
@@ -287,7 +430,18 @@ function summarizeSession(session) {
 function toCsvRow(values) {
   return values
     .map((value) => {
-      const str = value === null || value === undefined ? "" : String(value);
+      let str = value === null || value === undefined ? "" : String(value);
+      
+      // Mencegah nilai CR seperti "4/5" diubah menjadi tanggal oleh Excel
+      if (str.match(/^\d+\/\d+$/)) {
+        str = `="${str}"`;
+      } 
+      // Mengganti titik menjadi koma untuk angka desimal agar Excel dengan locale Indonesia
+      // tidak salah mengartikannya sebagai format waktu/jam (misal 3321.11 -> 3321,11)
+      else if (str.match(/^-?\d+\.\d+$/)) {
+        str = str.replace(".", ",");
+      }
+
       if (str.includes(CSV_DELIMITER) || str.includes("\"") || str.includes("\n")) {
         return `"${str.replace(/"/g, "\"\"")}"`;
       }
@@ -346,6 +500,27 @@ function sanitizePositiveInt(value, fallbackValue) {
 function isPacketEventKind(kind) {
   return kind === "sensor_data" || kind === "fatigue_imu" || kind === "safety_condition" || kind === "vehicle_telemetry";
 }
+
+function buildPayloadStreamKey(event) {
+  const nodeToken = event.node || (event.nodeId !== null && event.nodeId !== undefined ? `id:${event.nodeId}` : "unknown");
+  return `${event.kind}|${nodeToken}`;
+}
+
+function attachInterPayloadDelay(event) {
+  if (!event || !isPacketEventKind(event.kind)) {
+    return;
+  }
+  const key = buildPayloadStreamKey(event);
+  const prevTs = state.lastPayloadTsByStream[key];
+  if (typeof prevTs === "number") {
+    const diff = event.ts - prevTs;
+    event.delayMs = diff >= 0 && diff < 120000 ? diff : null;
+  } else {
+    event.delayMs = null;
+  }
+  state.lastPayloadTsByStream[key] = event.ts;
+}
+
 
 function sessionsToCsv(summaries) {
   const header = [
@@ -454,6 +629,52 @@ function getAllMqttEvents() {
   });
 }
 
+function isMissingRouteStamp(value) {
+  return value === null || value === undefined || value === "";
+}
+
+function getRouteStampStickyKey(event) {
+  if (event?.node) {
+    return `node:${event.node}`;
+  }
+  if (event?.nodeId !== null && event?.nodeId !== undefined) {
+    return `id:${event.nodeId}`;
+  }
+  return "__global__";
+}
+
+function applyStickyRouteStamps(events) {
+  const stickyByKey = new Map();
+  const input = Array.isArray(events) ? events : [];
+
+  return input.map((event) => {
+    const key = getRouteStampStickyKey(event);
+    let sticky = stickyByKey.get(key);
+    if (!sticky) {
+      sticky = { rreqAt: null, rrepAt: null, retries: null, success: null, discoveryMs: null };
+      stickyByKey.set(key, sticky);
+    }
+
+    const output = { ...event };
+    
+    // Terapkan data lama ke event saat ini jika event ini kosong
+    if (isMissingRouteStamp(output.rreqAt) && !isMissingRouteStamp(sticky.rreqAt)) output.rreqAt = sticky.rreqAt;
+    if (isMissingRouteStamp(output.rrepAt) && !isMissingRouteStamp(sticky.rrepAt)) output.rrepAt = sticky.rrepAt;
+    if (isMissingRouteStamp(output.retries) && !isMissingRouteStamp(sticky.retries)) output.retries = sticky.retries;
+    if (isMissingRouteStamp(output.success) && !isMissingRouteStamp(sticky.success)) output.success = sticky.success;
+    if (isMissingRouteStamp(output.discoveryMs) && !isMissingRouteStamp(sticky.discoveryMs)) output.discoveryMs = sticky.discoveryMs;
+
+    // Perbarui data sticky jika event ini memiliki data baru
+    if (!isMissingRouteStamp(event?.rreqAt)) sticky.rreqAt = event.rreqAt;
+    if (!isMissingRouteStamp(event?.rrepAt)) sticky.rrepAt = event.rrepAt;
+    if (!isMissingRouteStamp(event?.retries)) sticky.retries = event.retries;
+    if (!isMissingRouteStamp(event?.success)) sticky.success = event.success;
+    if (!isMissingRouteStamp(event?.discoveryMs)) sticky.discoveryMs = event.discoveryMs;
+
+    return output;
+  });
+}
+
 function computeSummaryLatencyAvg(summary) {
   const nodeRows = Array.isArray(summary?.nodes) ? summary.nodes : [];
   let sum = 0;
@@ -471,6 +692,7 @@ function computeSummaryLatencyAvg(summary) {
 }
 
 function allMqttEventsToCsv(allEvents) {
+  const stickyEvents = applyStickyRouteStamps(allEvents);
   const header = [
     "waktu",
     "event_id",
@@ -489,7 +711,7 @@ function allMqttEventsToCsv(allEvents) {
     "durasi_trial_menit",
     "hop",
     "route_path",
-    "latency_ms",
+    "delay_ms",
     "rreq_at",
     "rrep_at",
     "discovery_ms",
@@ -500,16 +722,14 @@ function allMqttEventsToCsv(allEvents) {
   ];
 
   const rows = [toCsvRow(header)];
-  for (const event of allEvents) {
+  for (const event of stickyEvents) {
     const trial = event.trial || {};
     const successValue = event.success === true ? 1 : event.success === false ? 0 : "";
     const routePath = (event.payload && Array.isArray(event.payload.route_path))
       ? event.payload.route_path.join(" -> ")
       : "";
-    // Hop otomatis dari route_path, fallback ke event.hops
-    const hopDisplay = (event.payload && Array.isArray(event.payload.route_path) && event.payload.route_path.length > 0)
-      ? (event.payload.route_path.length - 1)
-      : (event.hops ?? "");
+    // Hop otomatis dari event.hops
+    const hopDisplay = event.hops ?? "";
 
     rows.push(
       toCsvRow([
@@ -530,7 +750,7 @@ function allMqttEventsToCsv(allEvents) {
         trial.targetDurationMs ? Math.max(1, Math.round(Number(trial.targetDurationMs) / 60000)) : "",
         hopDisplay,
         routePath,
-        event.latencyMs ?? "",
+        event.delayMs ?? event.latencyMs ?? "",
         event.rreqAt ?? "",
         event.rrepAt ?? "",
         event.discoveryMs ?? "",
@@ -736,9 +956,10 @@ function packetEventsToCsv(events) {
     "topic",
     "node",
     "node_id",
+    "seq",
     "hop",
     "route_path",
-    "latency_ms",
+    "delay_ms",
     "payload_json"
   ];
   const rows = [toCsvRow(header)];
@@ -771,9 +992,10 @@ function packetEventsToCsv(events) {
         event.topic,
         event.node || "",
         event.nodeId ?? "",
+        event.seq ?? "",
         hopDisplay,
         routePath,
-        event.latencyMs ?? "",
+        event.delayMs ?? event.latencyMs ?? "",
         JSON.stringify(event.payload || {})
       ])
     );
@@ -857,7 +1079,9 @@ function computeReadiness() {
   const lastPacketEvent = findLastByPredicate(state.events, (e) => isPacketEventKind(e.kind));
   const lastLatencyEvent = findLastByPredicate(
     state.events,
-    (e) => isPacketEventKind(e.kind) && e.latencyMs !== null && e.latencyMs !== undefined
+    (e) => isPacketEventKind(e.kind) &&
+      ((e.delayMs !== null && e.delayMs !== undefined) ||
+        (e.latencyMs !== null && e.latencyMs !== undefined))
   );
   const lastRouteEvent = state.routeEvents.length > 0 ? state.routeEvents[state.routeEvents.length - 1] : null;
   const lastStatusEvent = state.gatewayStatusEvents.length > 0
@@ -955,6 +1179,11 @@ function normalizeEvent(topic, payloadRaw) {
 
   if (topic === config.topicDiagnostic) {
     const hop = num(payload?.hops);
+    const targetRaw = payload?.target_rute ?? null;
+    const targetId = Number.parseInt(String(targetRaw), 10);
+    const targetDisplay = Number.isFinite(targetId) && targetId === 0
+      ? resolveNodeNameById(targetId)
+      : targetRaw;
     return {
       id: ++eventCounter,
       kind: "route_diagnostic",
@@ -962,10 +1191,10 @@ function normalizeEvent(topic, payloadRaw) {
       ts: now,
       node: payload?.node_name || resolveNodeNameById(payload?.node_asal),
       nodeId: payload?.node_asal ?? null,
-      target: payload?.target_rute ?? null,
+      target: targetDisplay,
       success: num(payload?.success) === 1,
       hops: hop !== null ? hop : null,
-      retries: num(payload?.retries),
+      retries: num(payload?.retries) ?? 0,
       rreqAt: num(payload?.rreq_at),
       rrepAt: num(payload?.rrep_at),
       discoveryMs: num(payload?.discovery_ms),
@@ -992,8 +1221,9 @@ function normalizeEvent(topic, payloadRaw) {
       ts: now,
       node: resolveNodeNameById(nodeId),
       nodeId: nodeId ?? null,
+      seq: extractSeq(payload),
       latencyMs: latencyMs,
-      hops: num(payload?.route_hops) ?? num(payload?.hopCount),
+      hops: num(payload?.hopCount),
       rssi: num(payload?.rssi),
       snr: num(payload?.snr),
       discoveryMs: num(payload?.route_disc_ms),
@@ -1019,8 +1249,9 @@ function normalizeEvent(topic, payloadRaw) {
       ts: now,
       node: resolveNodeNameById(nodeId),
       nodeId: nodeId ?? null,
+      seq: extractSeq(payload),
       latencyMs: latencyMs,
-      hops: num(payload?.route_hops) ?? num(payload?.hopCount),
+      hops: num(payload?.hopCount),
       rssi: num(payload?.rssi),
       snr: num(payload?.snr),
       discoveryMs: num(payload?.route_disc_ms),
@@ -1046,8 +1277,9 @@ function normalizeEvent(topic, payloadRaw) {
       ts: now,
       node: nodeId !== undefined ? resolveNodeNameById(nodeId) : "lora_nailah",
       nodeId: nodeId ?? null,
+      seq: extractSeq(payload),
       latencyMs: latencyMs,
-      hops: num(payload?.route_hops) ?? num(payload?.hopCount),
+      hops: num(payload?.hopCount),
       rssi: num(payload?.rssi),
       snr: num(payload?.snr),
       discoveryMs: num(payload?.route_disc_ms),
@@ -1073,8 +1305,9 @@ function normalizeEvent(topic, payloadRaw) {
       ts: now,
       node,
       nodeId: payload?.nodeId ?? null,
+      seq: extractSeq(payload),
       latencyMs: latencyMs,
-      hops: num(payload?.route_hops) ?? num(payload?.hopCount),
+      hops: num(payload?.hopCount),
       rssi: num(payload?.rssi),
       snr: num(payload?.snr),
       discoveryMs: num(payload?.route_disc_ms),
@@ -1141,16 +1374,19 @@ function updateSessionWithEvent(session, event) {
   }
 
   nodeStats.received += 1;
+  nodeStats.receivedRaw += 1;
   nodeStats.lastPacketAt = event.ts;
+  applySeqToNodeStats(nodeStats, event.kind, parseSeq(event.seq));
 
-  if (event.latencyMs !== null && event.latencyMs >= 0 && event.latencyMs < 60000) {
-    nodeStats.latencySum += event.latencyMs;
+  const delayForStats = event.delayMs ?? null;
+  if (delayForStats !== null && delayForStats >= 0 && delayForStats < 60000) {
+    nodeStats.latencySum += delayForStats;
     nodeStats.latencyCount += 1;
-    if (event.latencyMs < nodeStats.latencyMin) {
-      nodeStats.latencyMin = event.latencyMs;
+    if (delayForStats < nodeStats.latencyMin) {
+      nodeStats.latencyMin = delayForStats;
     }
-    if (event.latencyMs > nodeStats.latencyMax) {
-      nodeStats.latencyMax = event.latencyMs;
+    if (delayForStats > nodeStats.latencyMax) {
+      nodeStats.latencyMax = delayForStats;
     }
   }
 
@@ -1172,6 +1408,7 @@ function updateSessionWithEvent(session, event) {
 
 function handleIncomingEvent(event) {
   state.mqtt.lastMessageAt = event.ts;
+  attachInterPayloadDelay(event);
   if (state.activeSession) {
     event.trial = toTrialMeta(state.activeSession);
   }
@@ -1567,7 +1804,7 @@ app.get("/api/state", (req, res) => {
 });
 
 app.get("/api/history/all_mqtt.json", (req, res) => {
-  const allMqttEvents = getAllMqttEvents();
+  const allMqttEvents = applyStickyRouteStamps(getAllMqttEvents());
   res.json({
     total: allMqttEvents.length,
     events: allMqttEvents
@@ -1657,6 +1894,7 @@ app.post("/api/reset", (req, res) => {
   state.events = [];
   state.routeEvents = [];
   state.gatewayStatusEvents = [];
+  state.lastPayloadTsByStream = {};
   state.latestByNode = {};
   state.sessions = [];
   state.activeSession = null;

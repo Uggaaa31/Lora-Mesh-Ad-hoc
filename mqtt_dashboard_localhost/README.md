@@ -5,12 +5,12 @@ Dashboard localhost untuk menerima data MQTT gateway LoRa mesh dan membantu peng
 ## Fitur Utama
 
 - Subscribe ke topic yang sama dengan gateway:
-  - `fms/lora/+`
-  - `fms/lora/status`
-  - `fms/lora/diagnostic/route`
-  - `fms/lora/fatigue_detection/imu`
-  - `fms/lora/safety/condition`
-  - `fms/lora/bno/data`
+  - `lora/fms/+`
+  - `lora/fms/status`
+  - `lora/fms/diagnostic/route`
+  - `lora/fms/fatigue_detection/imu`
+  - `lora/fms/safety/condition`
+  - `lora/fms/bno/data`
 - Form trial manual: `label`, `SF`, `BW`, `CR`, `hop target`, `jarak`, `durasi trial (menit)`.
 - Halaman monitoring dipisah per skenario pengujian skripsi.
 - Riwayat semua data MQTT masuk + export CSV per skenario.
@@ -47,12 +47,12 @@ MQTT_USERNAME=
 MQTT_PASSWORD=
 MQTT_REJECT_UNAUTHORIZED=true
 NODE_SEND_INTERVAL_MS=3000
-MQTT_TOPIC_DATA_PREFIX=fms/lora
-MQTT_TOPIC_STATUS=fms/lora/status
-MQTT_TOPIC_DIAGNOSTIC=fms/lora/diagnostic/route
-MQTT_TOPIC_FATIGUE_IMU=fms/lora/fatigue_detection/imu
-MQTT_TOPIC_SAFETY_CONDITION=fms/lora/safety/condition
-MQTT_TOPIC_BNO_DATA=fms/lora/bno/data
+MQTT_TOPIC_DATA_PREFIX=lora/fms
+MQTT_TOPIC_STATUS=lora/fms/status
+MQTT_TOPIC_DIAGNOSTIC=lora/fms/diagnostic/route
+MQTT_TOPIC_FATIGUE_IMU=lora/fms/fatigue_detection/imu
+MQTT_TOPIC_SAFETY_CONDITION=lora/fms/safety/condition
+MQTT_TOPIC_BNO_DATA=lora/fms/bno/data
 ```
 
 Catatan:
@@ -74,7 +74,7 @@ Catatan penting:
 
 ## Kapan Tabel Monitoring Terisi
 
-- Skenario 2 (`Route Discovery`): terisi langsung saat ada event di topic `fms/lora/diagnostic/route`.
+- Skenario 2 (`Route Discovery`): terisi langsung saat ada event di topic `lora/fms/diagnostic/route`.
 - Skenario 3 (`QoS & Latensi Per Node`): terisi dari trial aktif / trial terakhir.
 - Skenario 4 (`Pengaruh Parameter LoRa`): terisi dari riwayat trial yang sudah pernah dibuat.
 - Skenario 5 (`Jangkauan Multi-hop`): terisi dari riwayat trial yang memiliki nilai jarak/hop.
@@ -95,7 +95,7 @@ Kolom di UI:
 - `Result`
 
 Sumber data:
-- Topic MQTT `fms/lora/diagnostic/route`.
+- Topic MQTT `lora/fms/diagnostic/route`.
 - `Hop Target` diambil dari metadata trial aktif (jika ada).
 
 Arti + hitung:
@@ -225,7 +225,7 @@ Export utama:
 
 ### Contoh JSON MQTT
 
-1) Contoh `TRK-001/002/003` di topic `fms/lora/<nodeName>`
+1) Contoh `TRK-001/002/003` di topic `lora/fms/<nodeName>`
 
 ```json
 {
@@ -253,7 +253,7 @@ Export utama:
 }
 ```
 
-2) Contoh `lora_saenab` di topic `fms/lora/fatigue_detection/imu`
+2) Contoh `lora_saenab` di topic `lora/fms/fatigue_detection/imu`
 
 ```json
 {
@@ -273,7 +273,7 @@ Export utama:
 }
 ```
 
-3) Contoh `lora_nailah` di topic `fms/lora/safety/condition`
+3) Contoh `lora_nailah` di topic `lora/fms/safety/condition`
 
 ```json
 {
@@ -295,7 +295,7 @@ Export utama:
 }
 ```
 
-4) Contoh route diagnostic di topic `fms/lora/diagnostic/route`
+4) Contoh route diagnostic di topic `lora/fms/diagnostic/route`
 
 ```json
 {
@@ -311,3 +311,4 @@ Export utama:
   "rssi": -87
 }
 ```
+

@@ -167,7 +167,7 @@ function buildAutoLabel() {
   if (profile) {
     tokens.push(profile);
   }
-  tokens.push(`SF${sf}`, `BW${bw}`, `CR${cr}`, `H${hop}`, `D${dist}`, `T${dur}m`, stamp);
+  tokens.push(`SF${sf}`, `BW${bw}`, `CR${cr}`, `D${dist}`, `T${dur}m`, stamp);
   return tokens.join("_");
 }
 
@@ -338,10 +338,10 @@ function renderNodesTable(state) {
       <tr>
         <td>${esc(session.iterasi || "-")}</td>
         <td>${esc(row.node)}</td>
-        <td>${esc(row.received || 0)}</td>
+        <td>${esc(row.received || 0)} / ${esc(row.expected || 0)}</td>
         <td>${fmtNum(row.pdr)}</td>
         <td>${fmtNum(row.plr)}</td>
-        <td>${fmtNum(row.latencyAvg)}</td>
+        <td>${fmtNum(row.latencyAvg)} <span class="small">(${esc(row.expectedMethod === "sequence" ? "seq" : "time")})</span></td>
       </tr>
       `).join("");
     }
@@ -358,16 +358,19 @@ function renderNodesTable(state) {
 function renderRouteTable(state) {
   const rows = (state.routeEvents || []).slice().reverse();
   if (rows.length === 0) {
-    els.routeTableBody.innerHTML = "<tr><td colspan=\"8\" class=\"small\">Belum ada route diagnostic.</td></tr>";
+    els.routeTableBody.innerHTML = "<tr><td colspan=\"10\" class=\"small\">Belum ada route diagnostic.</td></tr>";
     return;
   }
 
   els.routeTableBody.innerHTML = rows
     .map((row) => {
       const trial = row.trial || {};
-      const rp = getRoutePathInfo(state, row.node);
-      // Hop otomatis dari jalur (jumlah panah = path.length - 1), fallback ke row.hops
-      const hopDisplay = rp.hops !== null ? rp.hops : (row.hops ?? "-");
+      const rowPath = (row.payload && Array.isArray(row.payload.route_path))
+        ? row.payload.route_path
+        : null;
+      const rp = getRoutePathInfo(state, row.node, rowPath);
+      // Gunakan nilai asli dari backend (hopCount)
+      const hopDisplay = row.hops ?? "-";
       return `
       <tr>
         <td>${esc(fmtTime(row.ts))}</td>
@@ -378,6 +381,7 @@ function renderRouteTable(state) {
         <td>${esc(fmtRouteStampLow32(row.rreqAt))}</td>
         <td>${esc(fmtRouteStampLow32(row.rrepAt))}</td>
         <td>${esc(row.discoveryMs ?? "-")}</td>
+        <td>${esc(row.retries ?? "-")}</td>
         <td class="${row.success ? "ok" : "fail"}">${row.success ? "SUCCESS" : "FAILED"}</td>
       </tr>
     `
@@ -385,15 +389,26 @@ function renderRouteTable(state) {
     .join("");
 }
 
-function getRoutePathInfo(state, nodeName) {
+function routePathInfoFromArray(path) {
+  const cleanPath = Array.isArray(path)
+    ? path.filter((item) => item !== null && item !== undefined && String(item).trim() !== "").map((item) => String(item).trim())
+    : [];
+  if (cleanPath.length === 0) {
+    return { html: '<span class="small">-</span>', hops: null, path: [] };
+  }
+  const html = cleanPath.map((n) => `<span class="route-node">${esc(n)}</span>`).join(" -> ");
+  return { html, hops: cleanPath.length - 1, path: cleanPath };
+}
+
+function getRoutePathInfo(state, nodeName, preferredPath = null) {
+  if (Array.isArray(preferredPath) && preferredPath.length > 0) {
+    return routePathInfoFromArray(preferredPath);
+  }
   // Cari event terakhir dari node ini yang memiliki route_path
   const latestByNode = state.latestByNode || {};
   const nodeEvent = latestByNode[nodeName];
   if (nodeEvent && nodeEvent.payload && Array.isArray(nodeEvent.payload.route_path)) {
-    const path = nodeEvent.payload.route_path;
-    const html = path.map(n => `<span class="route-node">${esc(n)}</span>`).join(' → ');
-    const hops = path.length - 1; // jumlah transisi = jumlah panah
-    return { html, hops, path };
+    return routePathInfoFromArray(nodeEvent.payload.route_path);
   }
   return { html: '<span class="small">-</span>', hops: null, path: [] };
 }
@@ -446,7 +461,7 @@ function renderRangeTable(state) {
       const evt = latestByNode[nodeName];
       const rp = getRoutePathInfo(state, nodeName);
       // Hop otomatis dari jalur route
-      const hops = rp.hops !== null ? rp.hops : (evt?.hops ?? "-");
+      const hops = evt?.hops ?? "-";
       return `
       <tr>
         <td>${esc(nodeName)}</td>
@@ -478,7 +493,7 @@ function renderRangeTable(state) {
       return nodeList.map(n => {
         const success = Number(n.received || 0) > 0;
         const rp = getRoutePathInfo(state, n.node);
-        const hops = rp.hops !== null ? rp.hops : (row.expectedHop || "-");
+        const hops = row.expectedHop || "-";
         const routePathHtml = rp.html || "-";
 
         return `
@@ -509,9 +524,10 @@ function renderAllMqttTable(state) {
       const successText = row.success === true ? "SUCCESS" : row.success === false ? "FAILED" : "-";
       const routePathArr = (row.payload && Array.isArray(row.payload.route_path))
         ? row.payload.route_path : [];
-      const routePath = routePathArr.length > 0 ? routePathArr.join(" → ") : "-";
-      // Hop otomatis: route_path.length - 1, fallback ke row.hops
-      const hopDisplay = routePathArr.length > 0 ? (routePathArr.length - 1) : (row.hops ?? "-");
+      const routePath = routePathArr.length > 0 ? routePathArr.join(" -> ") : "-";
+      // Gunakan nilai asli dari backend (hopCount)
+      const hopDisplay = row.hops ?? "-";
+      const delayDisplay = row.delayMs ?? row.latencyMs ?? "-";
       return `
       <tr>
         <td>${esc(fmtTime(row.ts))}</td>
@@ -527,7 +543,7 @@ function renderAllMqttTable(state) {
         <td>${esc(fmtDurationMinFromMs(trial.targetDurationMs))}</td>
         <td>${esc(String(hopDisplay))}</td>
         <td class="route-path">${esc(routePath)}</td>
-        <td>${esc(row.latencyMs ?? "-")}</td>
+        <td>${esc(delayDisplay)}</td>
         <td>${esc(fmtRouteStampLow32(row.rreqAt))}</td>
         <td>${esc(fmtRouteStampLow32(row.rrepAt))}</td>
         <td>${esc(row.discoveryMs ?? "-")}</td>
@@ -792,3 +808,5 @@ async function init() {
 }
 
 init();
+
+
