@@ -23,9 +23,11 @@ const AUTO_DEFAULT_INACTIVITY_TIMEOUT_SEC = Number.parseInt(
 );
 const AUTO_DEFAULT_MAX_ROUTE_FAIL = Number.parseInt(process.env.AUTO_DEFAULT_MAX_ROUTE_FAIL || "3", 10);
 const MANUAL_DEFAULT_DURATION_MS = Number.parseInt(process.env.MANUAL_DEFAULT_DURATION_MS || "300000", 10);
+const MANUAL_DEFAULT_PACKET_TARGET = Number.parseInt(process.env.MANUAL_DEFAULT_PACKET_TARGET || "20", 10);
 const CSV_DELIMITER = process.env.CSV_DELIMITER || ";";
 const CSV_INCLUDE_BOM = process.env.CSV_INCLUDE_BOM !== "false";
 const SEQ_REORDER_TOLERANCE = Number.parseInt(process.env.SEQ_REORDER_TOLERANCE || "16", 10);
+const MQTT_DATA_DEDUP_WINDOW_MS = Number.parseInt(process.env.MQTT_DATA_DEDUP_WINDOW_MS || "60000", 10);
 
 const config = {
   mqttUri: process.env.MQTT_URI || "wss://mqtt.aispektra.com:443/",
@@ -66,6 +68,7 @@ const state = {
   events: [],
   routeEvents: [],
   gatewayStatusEvents: [],
+  dataEventDedup: {},
   lastPayloadTsByStream: {},
   latestByNode: {},
   sessions: [],
@@ -89,6 +92,8 @@ const state = {
     nextTimer: null
   }
 };
+
+const DATA_EVENT_KINDS = new Set(["sensor_data", "fatigue_imu", "safety_condition", "vehicle_telemetry"]);
 
 // Fixed interval: firmware menggunakan 3 detik per node (bukan adaptive TDMA)
 function getFixedIntervalMs() {
@@ -153,6 +158,57 @@ function extractSeq(payload) {
     }
   }
   return null;
+}
+
+function extractPayloadSampleKey(payload) {
+  if (!payload || typeof payload !== "object") {
+    return "";
+  }
+  const candidates = [
+    payload.txTimestamp,
+    payload.timestamp_ms,
+    payload.epoch,
+    payload.ts,
+    payload.timestamp,
+    payload.gps?.timestamp,
+    payload.imu?.timestamp
+  ];
+  for (const value of candidates) {
+    if (value !== null && value !== undefined && value !== "") {
+      return String(value);
+    }
+  }
+  return "";
+}
+
+function shouldDropDuplicateDataEvent(event) {
+  if (!event || !DATA_EVENT_KINDS.has(event.kind)) {
+    return false;
+  }
+  const seq = parseSeq(event.seq);
+  if (seq === null) {
+    return false;
+  }
+  const nodeKey = event.nodeId ?? event.node;
+  if (nodeKey === null || nodeKey === undefined || nodeKey === "") {
+    return false;
+  }
+
+  const now = event.ts || Date.now();
+  for (const [key, ts] of Object.entries(state.dataEventDedup)) {
+    if ((now - ts) > MQTT_DATA_DEDUP_WINDOW_MS) {
+      delete state.dataEventDedup[key];
+    }
+  }
+
+  const sampleKey = extractPayloadSampleKey(event.payload);
+  const key = `${event.kind}|${nodeKey}|${seq}|${sampleKey}`;
+  const lastSeen = state.dataEventDedup[key];
+  if (lastSeen && (now - lastSeen) <= MQTT_DATA_DEDUP_WINDOW_MS) {
+    return true;
+  }
+  state.dataEventDedup[key] = now;
+  return false;
 }
 
 function resolveNodeNameById(nodeId) {
@@ -316,6 +372,8 @@ function currentSessionDurationMs(session) {
 function summarizeSession(session) {
   const durationMs = currentSessionDurationMs(session);
   const now = Date.now();
+  const targetPacketCount = Number.parseInt(String(session.targetPacketCount || ""), 10);
+  const hasPacketTarget = Number.isFinite(targetPacketCount) && targetPacketCount > 0;
 
   const nodeRows = Object.entries(session.nodeStats).map(([node, s]) => {
     const nodeDurationMs = s.firstPacketAt > 0
@@ -325,10 +383,13 @@ function summarizeSession(session) {
     const expectedByTime = Math.max(1, Math.floor(nodeDurationMs / session.intervalMs) + 1);
     const seqTotals = getSeqTotalsForNode(s);
     const useSeqMethod = seqTotals.enabled && seqTotals.expected > 0;
-    const expected = useSeqMethod ? seqTotals.expected : expectedByTime;
+    const observedExpected = useSeqMethod ? seqTotals.expected : expectedByTime;
+    const expected = hasPacketTarget
+      ? Math.min(observedExpected, targetPacketCount)
+      : observedExpected;
     const receivedForPdr = useSeqMethod
       ? Math.min(seqTotals.receivedUnique, expected)
-      : s.received;
+      : Math.min(s.received, expected);
     const pdr = Math.min(100, (receivedForPdr / expected) * 100);
     const plr = Math.max(0, 100 - pdr);
     let latencyAvg = s.latencyCount > 0 ? s.latencySum / s.latencyCount : null;
@@ -350,6 +411,7 @@ function summarizeSession(session) {
       received: receivedForPdr,
       receivedRaw: s.receivedRaw || s.received,
       expected,
+      observedExpected,
       pdr,
       plr,
       expectedMethod: useSeqMethod ? "sequence" : "time",
@@ -406,6 +468,7 @@ function summarizeSession(session) {
     stopReason: session.stopReason || "",
     durationMs,
     targetDurationMs: session.targetDurationMs || null,
+    targetPacketCount: hasPacketTarget ? targetPacketCount : null,
     remainingMs:
       !session.endedAt && session.targetDurationMs
         ? Math.max(0, session.targetDurationMs - durationMs)
@@ -472,6 +535,16 @@ function withCsvEncoding(csvText) {
     return csvText;
   }
   return `\ufeff${csvText}`;
+}
+
+function formatDateTimeMs(timestamp) {
+  if (!timestamp || isNaN(Number(timestamp))) return "";
+  const d = new Date(Number(timestamp));
+  const HH = String(d.getHours()).padStart(2, "0");
+  const mm = String(d.getMinutes()).padStart(2, "0");
+  const ss = String(d.getSeconds()).padStart(2, "0");
+  const ms = String(d.getMilliseconds()).padStart(3, "0");
+  return `${HH}:${mm}:${ss}.${ms}`;
 }
 
 function formatDateForCode(ts) {
@@ -615,8 +688,59 @@ function toTrialMeta(session) {
     note: session.note || "",
     intervalMs: getFixedIntervalMs(),
     targetDurationMs: session.targetDurationMs || null,
+    targetPacketCount: session.targetPacketCount || null,
     startedAt: session.startedAt || 0
   };
+}
+
+function hasTrialMeta(trial) {
+  if (!trial || typeof trial !== "object") {
+    return false;
+  }
+  return Boolean(
+    trial.trialCode ||
+    trial.label ||
+    trial.sf ||
+    trial.bwKHz ||
+    trial.cr ||
+    trial.distanceM
+  );
+}
+
+function resolveTrialMetaForEvent(event) {
+  if (hasTrialMeta(event?.trial)) {
+    return event.trial;
+  }
+  if (!Array.isArray(state.sessions) || state.sessions.length === 0) {
+    return {};
+  }
+
+  const eventTs = Number(event?.ts || 0);
+  let nearestSession = null;
+  let nearestDistance = Number.POSITIVE_INFINITY;
+
+  for (const session of state.sessions) {
+    const startedAt = Number(session.startedAt || 0);
+    const endedAt = Number(session.endedAt || 0);
+    let distance = 0;
+
+    if (eventTs > 0 && startedAt > 0) {
+      if (eventTs >= startedAt && (!endedAt || eventTs <= endedAt)) {
+        distance = 0;
+      } else if (eventTs < startedAt) {
+        distance = startedAt - eventTs;
+      } else {
+        distance = eventTs - (endedAt || startedAt);
+      }
+    }
+
+    if (distance < nearestDistance) {
+      nearestDistance = distance;
+      nearestSession = session;
+    }
+  }
+
+  return toTrialMeta(nearestSession) || {};
 }
 
 function getAllMqttEvents() {
@@ -728,8 +852,13 @@ function allMqttEventsToCsv(allEvents) {
     const routePath = (event.payload && Array.isArray(event.payload.route_path))
       ? event.payload.route_path.join(" -> ")
       : "";
-    // Hop otomatis dari event.hops
-    const hopDisplay = event.hops ?? "";
+    // Hop otomatis dari route_path, fallback ke event.hops
+    const hopDisplay = (event.payload && Array.isArray(event.payload.route_path) && event.payload.route_path.length > 0)
+      ? (event.payload.route_path.length - 1)
+      : (event.hops ?? "");
+
+    const rreqTime = (event.ts && event.discoveryMs) ? formatDateTimeMs(event.ts - event.discoveryMs) : "";
+    const rrepTime = event.ts ? formatDateTimeMs(event.ts) : "";
 
     rows.push(
       toCsvRow([
@@ -751,8 +880,8 @@ function allMqttEventsToCsv(allEvents) {
         hopDisplay,
         routePath,
         event.delayMs ?? event.latencyMs ?? "",
-        event.rreqAt ?? "",
-        event.rrepAt ?? "",
+        rreqTime,
+        rrepTime,
         event.discoveryMs ?? "",
         event.retries ?? "",
         successValue,
@@ -769,18 +898,23 @@ function scenario4ToCsv(summaries) {
     "trial_id",
     "trial_code",
     "label",
+    "iterasi",
     "sf",
     "bw_khz",
     "cr",
     "jarak_m",
+    "node",
     "paket_dikirim",
     "paket_diterima",
     "mulai",
     "selesai",
     "durasi_detik",
-    "pdr_total_persen",
-    "plr_total_persen",
-    "latency_rata2_semua_node_ms",
+    "pdr_node_persen",
+    "plr_node_persen",
+    "delay_node_ms",
+    "hop_rata2",
+    "rssi_rata2",
+    "snr_rata2",
     "route_attempt",
     "route_success",
     "route_fail"
@@ -788,29 +922,67 @@ function scenario4ToCsv(summaries) {
 
   const rows = [toCsvRow(header)];
   for (const summary of summaries) {
-    const latencyAvg = computeSummaryLatencyAvg(summary);
-    rows.push(
-      toCsvRow([
-        summary.id,
-        summary.trialCode,
-        summary.label,
-        summary.sf || "",
-        summary.bwKHz || "",
-        summary.cr || "",
-        summary.distanceM || "",
-        summary.total?.expected ?? 0,
-        summary.total?.received ?? 0,
-        formatDateTime(summary.startedAt),
-        formatDateTime(summary.endedAt),
-        (summary.durationMs / 1000).toFixed(2),
-        summary.total?.pdr !== undefined ? Number(summary.total.pdr).toFixed(2) : "",
-        summary.total?.plr !== undefined ? Number(summary.total.plr).toFixed(2) : "",
-        latencyAvg !== null ? latencyAvg.toFixed(2) : "",
-        summary.route?.attempts ?? 0,
-        summary.route?.success ?? 0,
-        summary.route?.fail ?? 0
-      ])
-    );
+    const nodeList = Array.isArray(summary.nodes) ? summary.nodes : [];
+    if (nodeList.length === 0) {
+      rows.push(
+        toCsvRow([
+          summary.id,
+          summary.trialCode,
+          summary.label,
+          summary.iterasi || "1",
+          summary.sf || "",
+          summary.bwKHz || "",
+          summary.cr || "",
+          summary.distanceM || "",
+          "-",
+          0,
+          0,
+          formatDateTime(summary.startedAt),
+          formatDateTime(summary.endedAt),
+          (summary.durationMs / 1000).toFixed(2),
+          "",
+          "",
+          "",
+          "",
+          "",
+          "",
+          summary.route?.attempts ?? 0,
+          summary.route?.success ?? 0,
+          summary.route?.fail ?? 0
+        ])
+      );
+      continue;
+    }
+
+    for (const node of nodeList) {
+      rows.push(
+        toCsvRow([
+          summary.id,
+          summary.trialCode,
+          summary.label,
+          summary.iterasi || "1",
+          summary.sf || "",
+          summary.bwKHz || "",
+          summary.cr || "",
+          summary.distanceM || "",
+          node.node || "",
+          node.expected ?? 0,
+          node.received ?? 0,
+          formatDateTime(summary.startedAt),
+          formatDateTime(summary.endedAt),
+          (summary.durationMs / 1000).toFixed(2),
+          node.pdr !== undefined ? Number(node.pdr).toFixed(2) : "",
+          node.plr !== undefined ? Number(node.plr).toFixed(2) : "",
+          node.latencyAvg !== null && node.latencyAvg !== undefined ? Number(node.latencyAvg).toFixed(2) : "",
+          node.hopAvg !== null && node.hopAvg !== undefined ? Number(node.hopAvg).toFixed(2) : "",
+          node.rssiAvg !== null && node.rssiAvg !== undefined ? Number(node.rssiAvg).toFixed(2) : "",
+          node.snrAvg !== null && node.snrAvg !== undefined ? Number(node.snrAvg).toFixed(2) : "",
+          summary.route?.attempts ?? 0,
+          summary.route?.success ?? 0,
+          summary.route?.fail ?? 0
+        ])
+      );
+    }
   }
   return rows.join("\n");
 }
@@ -1020,6 +1192,8 @@ function routeEventsToCsv(routeEvents) {
     "target",
     "hops",
     "route_path",
+    "waktu_rreq",
+    "waktu_rrep",
     "retries",
     "durasi_discovery_ms",
     "success",
@@ -1028,7 +1202,7 @@ function routeEventsToCsv(routeEvents) {
   ];
   const rows = [toCsvRow(header)];
   for (const event of routeEvents) {
-    const trial = event.trial || {};
+    const trial = resolveTrialMetaForEvent(event);
     const routePath = (event.payload && Array.isArray(event.payload.route_path))
       ? event.payload.route_path.join(" -> ")
       : "";
@@ -1036,6 +1210,9 @@ function routeEventsToCsv(routeEvents) {
     const hopDisplay = (event.payload && Array.isArray(event.payload.route_path) && event.payload.route_path.length > 0)
       ? (event.payload.route_path.length - 1)
       : (event.hops ?? "");
+
+    const rreqTime = (event.ts && event.discoveryMs) ? formatDateTimeMs(event.ts - event.discoveryMs) : "";
+    const rrepTime = event.ts ? formatDateTimeMs(event.ts) : "";
 
     rows.push(
       toCsvRow([
@@ -1054,6 +1231,8 @@ function routeEventsToCsv(routeEvents) {
         event.target ?? "",
         hopDisplay,
         routePath,
+        rreqTime,
+        rrepTime,
         event.retries ?? "",
         event.discoveryMs ?? "",
         event.success ? 1 : 0,
@@ -1353,8 +1532,7 @@ function updateSessionWithEvent(session, event) {
     return;
   }
 
-  const packetKinds = new Set(["sensor_data", "fatigue_imu", "safety_condition", "vehicle_telemetry"]);
-  if (!packetKinds.has(event.kind) || !event.node) {
+  if (!DATA_EVENT_KINDS.has(event.kind) || !event.node) {
     return;
   }
   session.lastPacketAt = event.ts;
@@ -1406,8 +1584,53 @@ function updateSessionWithEvent(session, event) {
   }
 }
 
+function getNodePacketTargetProgress(nodeStats) {
+  if (!nodeStats) {
+    return 0;
+  }
+  const seqTotals = getSeqTotalsForNode(nodeStats);
+  if (seqTotals.enabled && seqTotals.expected > 0) {
+    return seqTotals.expected;
+  }
+  return nodeStats.received || 0;
+}
+
+function shouldStopSessionByPacketTarget(session) {
+  const targetPacketCount = Number.parseInt(String(session?.targetPacketCount || ""), 10);
+  if (!Number.isFinite(targetPacketCount) || targetPacketCount <= 0) {
+    return false;
+  }
+
+  const nodeStats = Object.values(session.nodeStats || {});
+  if (nodeStats.length === 0) {
+    return false;
+  }
+
+  return nodeStats.every((stats) => getNodePacketTargetProgress(stats) >= targetPacketCount);
+}
+
+function maybeStopManualSessionByPacketTarget() {
+  const session = state.activeSession;
+  if (!session || session.startedBy !== "manual") {
+    return false;
+  }
+  if (!shouldStopSessionByPacketTarget(session)) {
+    return false;
+  }
+
+  const summary = stopSession("packet_target_reached");
+  if (summary) {
+    broadcast({ type: "session_stopped", summary });
+    return true;
+  }
+  return false;
+}
+
 function handleIncomingEvent(event) {
   state.mqtt.lastMessageAt = event.ts;
+  if (shouldDropDuplicateDataEvent(event)) {
+    return;
+  }
   attachInterPayloadDelay(event);
   if (state.activeSession) {
     event.trial = toTrialMeta(state.activeSession);
@@ -1426,6 +1649,7 @@ function handleIncomingEvent(event) {
 
   if (state.activeSession) {
     updateSessionWithEvent(state.activeSession, event);
+    maybeStopManualSessionByPacketTarget();
   }
 
   broadcast({ type: "event", event });
@@ -1487,6 +1711,10 @@ function startSession(input, options = {}) {
   const targetDurationMs = Number.isFinite(targetDurationMsRaw) && targetDurationMsRaw > 0
     ? targetDurationMsRaw
     : null;
+  const targetPacketCountRaw = Number.parseInt(String(options.targetPacketCount ?? input.targetPacketCount ?? ""), 10);
+  const targetPacketCount = Number.isFinite(targetPacketCountRaw) && targetPacketCountRaw > 0
+    ? targetPacketCountRaw
+    : null;
   const session = {
     id: trialId,
     trialCode: buildTrialCode(trialId, startedAt),
@@ -1507,6 +1735,7 @@ function startSession(input, options = {}) {
     startedBy: options.startedBy || "manual",
     autoCaseLabel: options.autoCaseLabel || "",
     targetDurationMs,
+    targetPacketCount,
     lastPacketAt: null,
     nodeStats: {},
     route: {
@@ -1534,6 +1763,8 @@ function stopSession(reason = "manual_stop") {
   state.activeSession.endedAt = endedAt;
   state.activeSession.stopReason = reason;
   if (reason === "duration_elapsed") {
+    state.activeSession.status = "completed";
+  } else if (reason === "packet_target_reached") {
     state.activeSession.status = "completed";
   } else if (reason === "auto_fail_route") {
     state.activeSession.status = "failed_route";
@@ -1782,7 +2013,8 @@ app.get("/api/config", (req, res) => {
       inactivityTimeoutSec: AUTO_DEFAULT_INACTIVITY_TIMEOUT_SEC,
       maxRouteFail: AUTO_DEFAULT_MAX_ROUTE_FAIL
     },
-    manualDefaultDurationMs: MANUAL_DEFAULT_DURATION_MS
+    manualDefaultDurationMs: MANUAL_DEFAULT_DURATION_MS,
+    manualDefaultPacketTarget: MANUAL_DEFAULT_PACKET_TARGET
   });
 });
 
@@ -1832,8 +2064,12 @@ app.post("/api/session/start", (req, res) => {
   const targetDurationMs = Number.isFinite(durationMinutes) && durationMinutes > 0
     ? Math.round(durationMinutes * 60 * 1000)
     : MANUAL_DEFAULT_DURATION_MS;
+  const packetTargetRaw = Number.parseInt(String(payload.targetPacketCount || ""), 10);
+  const targetPacketCount = Number.isFinite(packetTargetRaw) && packetTargetRaw > 0
+    ? packetTargetRaw
+    : MANUAL_DEFAULT_PACKET_TARGET;
 
-  const session = startSession(payload, { startedBy: "manual", targetDurationMs });
+  const session = startSession(payload, { startedBy: "manual", targetDurationMs, targetPacketCount });
   if (!session) {
     res.status(409).json({ error: "Trial aktif sudah ada. Stop dulu sebelum start trial baru." });
     return;
@@ -1894,6 +2130,7 @@ app.post("/api/reset", (req, res) => {
   state.events = [];
   state.routeEvents = [];
   state.gatewayStatusEvents = [];
+  state.dataEventDedup = {};
   state.lastPayloadTsByStream = {};
   state.latestByNode = {};
   state.sessions = [];

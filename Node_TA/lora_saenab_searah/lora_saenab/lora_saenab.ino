@@ -27,8 +27,8 @@ const char* WIFI_SSID = "hmm";
 const char* WIFI_PASS = "12345678";
 
 static const char* MQTT_URI    = "wss://mqtt.aistrack.site:443/";
-static const char* TOPIC_IMU    = "fms/fatigue_detection/imu";
-static const char* TOPIC_STATUS = "fms/fatigue_detection/vision";
+static const char* TOPIC_IMU    = "lora/fms/fatigue_detection/imu";
+static const char* TOPIC_STATUS = "lora/fms/fatigue_detection/vision";
 
 // ================================================================
 // HARDWARE PINS (Diselaraskan dengan config.h untuk mencegah bentrok SPI)
@@ -48,6 +48,12 @@ AODVRouting aodv(NODE_ID);
 LoRaPacketHandler packetHandler;
 LoRaRuntimeCfg runtimeCfg;
 static uint32_t dataSequence = 0;
+static bool pendingDataAck = false;
+static LoRaPacket pendingDataPacket;
+static uint32_t pendingDataSeq = 0;
+static uint8_t pendingDataRetries = 0;
+static uint8_t consecutiveAckFailures = 0;
+static unsigned long pendingDataLastTxMs = 0;
 
 Adafruit_BNO055 bno = Adafruit_BNO055(55, 0x28);
 
@@ -75,7 +81,14 @@ bool timeSynced = false;
 
 // Fixed Interval Scheduling
 unsigned long lastLoRaSendTime = 0;
+unsigned long currentLoRaSendIntervalMs = DATA_SEND_INTERVAL;
 bool initialOffsetDone = false;
+static const uint16_t PAYLOAD_JITTER_MIN_MS = 100;
+static const uint16_t PAYLOAD_JITTER_MAX_MS = 500;
+
+static unsigned long nextPayloadIntervalMs() {
+    return DATA_SEND_INTERVAL + (unsigned long)random(PAYLOAD_JITTER_MIN_MS, PAYLOAD_JITTER_MAX_MS + 1);
+}
 
 // ================================================================
 // TIME FORMATTER (FROM USER)
@@ -112,9 +125,9 @@ static void connect_wifi() {
         delay(500); Serial.print(".");
     }
     if (WiFi.status() == WL_CONNECTED) {
-        Serial.println("\n✅ WiFi connected");
+        Serial.println("\nâœ… WiFi connected");
     } else {
-        Serial.println("\n❌ WiFi timeout, starting in Hybrid/LoRa mode");
+        Serial.println("\nâŒ WiFi timeout, starting in Hybrid/LoRa mode");
     }
 }
 
@@ -180,12 +193,16 @@ static void read_bno055_and_filter(unsigned long nowMs) {
 }
 
 // ================================================================
-// LORA MESH — Fixed 3s Interval (bukan TDMA adaptive)
+// LORA MESH â€” Fixed 3s Interval (bukan TDMA adaptive)
 // ================================================================
 void sendPacketCallback(const LoRaPacket& packet) {
     uint8_t buf[RH_RF95_MAX_MESSAGE_LEN];
     int len = packetHandler.serializePacket(packet, buf, sizeof(buf));
-    delay(random(30, 150));
+    if (packet.header.packetType == PKT_TYPE_ACK) {
+        delay(random(5, 20));
+    } else {
+        delay(random(30, 150));
+    }
     if (len > 0) {
         rf95.send(buf, len);
         rf95.waitPacketSent();
@@ -193,16 +210,96 @@ void sendPacketCallback(const LoRaPacket& packet) {
     }
 }
 
-void sendLoRaImuData() {
-    if (!aodv.hasRouteTo(GATEWAY_ID)) {
-        aodv.initiateRouteDiscovery(GATEWAY_ID);
-        Serial.println("[LoRa] No route to GW, discovering...");
+void sendDiagnosticCallback(const DiscoveryDiagPayload& diag) {
+    if (!aodv.hasRouteTo(GATEWAY_ID)) return;
+    static uint32_t diagSeq = 0;
+    LoRaPacket pkt = LoRaPacketHandler::createDiagnosticPacket(
+        NODE_ID, GATEWAY_ID, diag, ++diagSeq);
+    pkt.header.nextHop = aodv.getNextHop(GATEWAY_ID);
+    pkt.header.checksum = LoRaPacketHandler::calculateChecksum(pkt);
+    delay(500); // Jeda agar tidak collision dengan RREP/data
+    sendPacketCallback(pkt);
+    Serial.printf("[DIAG TX] target=%u discovery=%lums hops=%u retries=%u success=%u\n",
+                  diag.targetNodeId, (unsigned long)diag.discoveryMs,
+                  diag.hopCount, diag.retryCount, diag.success);
+}
+
+uint32_t getDataAckTimeoutMs() {
+    uint32_t baseMs;
+    switch (runtimeCfg.sf) {
+        case 7:  baseMs = DATA_ACK_TIMEOUT_SF7_MS; break;
+        case 9:  baseMs = DATA_ACK_TIMEOUT_SF9_MS; break;
+        case 12: baseMs = DATA_ACK_TIMEOUT_SF12_MS; break;
+        default: baseMs = DATA_ACK_TIMEOUT_MS; break;
+    }
+    uint8_t hops = aodv.getRouteHopCount(GATEWAY_ID);
+    if (hops == 0) hops = 1;
+    return (baseMs * hops) + ((hops - 1) * 500);
+}
+
+uint8_t getDataAckMaxRetries() {
+    switch (runtimeCfg.sf) {
+        case 7:  return DATA_ACK_MAX_RETRIES_SF7;
+        case 9:  return DATA_ACK_MAX_RETRIES_SF9;
+        case 12: return DATA_ACK_MAX_RETRIES_SF12;
+        default: return DATA_ACK_MAX_RETRIES;
+    }
+}
+
+void processDataAckTimeout(unsigned long nowMs) {
+    if (!DATA_ACK_ENABLE || !pendingDataAck) {
+        return;
+    }
+    const uint32_t ackTimeoutMs = getDataAckTimeoutMs();
+    const uint8_t ackMaxRetries = getDataAckMaxRetries();
+
+    if ((nowMs - pendingDataLastTxMs) < ackTimeoutMs) {
+        return;
+    }
+    if (pendingDataRetries >= ackMaxRetries) {
+        Serial.printf("[ACK] timeout seq=%lu retries=%u, drop\n",
+                      (unsigned long)pendingDataSeq,
+                      (unsigned)pendingDataRetries);
+        pendingDataAck = false;
+        
+        consecutiveAckFailures++;
+        if (consecutiveAckFailures >= 5) {
+            Serial.println("[AODV] Link terputus (3x ACK Timeout berturut-turut)! Menghapus rute lama...");
+            aodv.invalidateRoute(GATEWAY_ID);
+            consecutiveAckFailures = 0;
+        } else {
+            Serial.printf("[AODV] Paket gagal, tapi rute dipertahankan (%d/3 kegagalan)\n", consecutiveAckFailures);
+        }
+        
         return;
     }
 
-    uint32_t nowEpoch = timeSynced
-        ? ((uint32_t)millis() + epochOffsetMsLow32)
-        : (uint32_t)millis();
+    pendingDataRetries++;
+    pendingDataLastTxMs = nowMs;
+    sendPacketCallback(pendingDataPacket);
+    Serial.printf("[ACK] retry %u/%u seq=%lu\n",
+                  (unsigned)pendingDataRetries,
+                  (unsigned)ackMaxRetries,
+                  (unsigned long)pendingDataSeq);
+}
+
+bool sendLoRaImuData() {
+    if (DATA_ACK_ENABLE && pendingDataAck) {
+        return false;
+    }
+
+    if (!aodv.hasRouteTo(GATEWAY_ID)) {
+        aodv.initiateRouteDiscovery(GATEWAY_ID);
+        Serial.println("[LoRa] No route to GW, discovering...");
+        return false;
+    }
+
+    uint32_t nowEpoch = (uint32_t)millis();
+    if (timeSynced) {
+        struct timeval tv;
+        gettimeofday(&tv, NULL);
+        nowEpoch = (uint32_t)((uint64_t)tv.tv_sec * 1000ULL + (tv.tv_usec / 1000));
+    }
 
     ImuFatiguePayload imu = {};
     imu.packetType = PKT_TYPE_FATIGUE_IMU;
@@ -216,13 +313,23 @@ void sendLoRaImuData() {
     imu.routeDiscMs = 0;
     imu.routeHops = aodv.getRouteHopCount(GATEWAY_ID);
 
+    uint32_t nextSeq = dataSequence + 1;
     LoRaPacket pkt = packetHandler.createImuFatiguePacket(
-        NODE_ID, GATEWAY_ID, imu, ++dataSequence);
+        NODE_ID, GATEWAY_ID, imu, nextSeq);
     pkt.header.nextHop = aodv.getNextHop(GATEWAY_ID);
     pkt.header.checksum = LoRaPacketHandler::calculateChecksum(pkt);
     
     sendPacketCallback(pkt);
+    dataSequence = nextSeq;
+    if (DATA_ACK_ENABLE) {
+        pendingDataAck = true;
+        pendingDataPacket = pkt;
+        pendingDataSeq = nextSeq;
+        pendingDataRetries = 0;
+        pendingDataLastTxMs = millis();
+    }
     Serial.printf("[LoRa TX] IMU SF%d BW%dkHz\n", runtimeCfg.sf, runtimeCfg.bwKHz);
+    return true;
 }
 
 // ================================================================
@@ -230,9 +337,10 @@ void sendLoRaImuData() {
 // ================================================================
 void setup() {
     Serial.begin(115200);
+    randomSeed((uint32_t)micros() ^ ((uint32_t)NODE_ID << 16));
     // BNO055 Init (FROM YOUR SCRIPT)
     Wire.begin(I2C_SDA, I2C_SCL);
-    if (!bno.begin()) Serial.println("❌ BNO055 Fail");
+    if (!bno.begin()) Serial.println("âŒ BNO055 Fail");
     else bno.setExtCrystalUse(true);
 
     // LoRa Hardware Init
@@ -251,6 +359,7 @@ void setup() {
     rf95.setCodingRate4(runtimeCfg.cr);
     rf95.setTxPower(runtimeCfg.txPower, runtimeCfg.useRFO);
     rf95.setPreambleLength(LORA_PREAMBLE_LENGTH);
+    rf95.setCADTimeout(LORA_CAD_TIMEOUT_MS);
     Serial.printf("LoRa OK: SF=%d BW=%dkHz CR=4/%d Freq=%.1fMHz\n",
                   runtimeCfg.sf, runtimeCfg.bwKHz, runtimeCfg.cr, LORA_FREQUENCY);
 
@@ -260,10 +369,12 @@ void setup() {
     // AODV Init
     aodv.begin();
     aodv.onSendPacket = sendPacketCallback;
+    aodv.onDiagnosticReady = sendDiagnosticCallback;
+    aodv.epochOffsetPtr = &epochOffsetMsLow32;
 
-    // WiFi & MQTT Init
-    connect_wifi();
-    start_mqtt();
+    // WiFi & MQTT Init (Dimatikan sementara untuk Skenario 5 LoRa Murni)
+    // connect_wifi();
+    // start_mqtt();
 }
 
 void loop() {
@@ -274,8 +385,8 @@ void loop() {
     // 1. Read & Filter IMU
     read_bno055_and_filter(nowMs);
     
-    // 2. Connectivity Checks
-    bool internetOk = (WiFi.status() == WL_CONNECTED && mqttConnected);
+    // 2. Connectivity Checks (Dimatikan agar langsung pakai LoRa)
+    bool internetOk = false; // (WiFi.status() == WL_CONNECTED && mqttConnected);
     
     // 3. MQTT Publish (If Online)
     if (internetOk && (nowMs - lastPub >= pubIntervalMs)) {
@@ -311,15 +422,22 @@ void loop() {
         esp_mqtt_client_publish(mqtt, TOPIC_IMU, out, (int)len, 1, 0);
     }
 
-    // 4. LoRa Failover — hanya kirim saat WiFi off/no internet
+    // 4. LoRa Failover â€” hanya kirim saat WiFi off/no internet
     if (!internetOk) {
+        processDataAckTimeout(nowMs);
         if (!initialOffsetDone) {
-            lastLoRaSendTime = nowMs - DATA_SEND_INTERVAL + (NODE_ID * 500UL);
+            currentLoRaSendIntervalMs = nextPayloadIntervalMs();
+            lastLoRaSendTime = nowMs - currentLoRaSendIntervalMs + (NODE_ID * 500UL);
             initialOffsetDone = true;
+            Serial.printf("[LoRa] Payload jitter aktif: +%u..+%u ms\n",
+                          PAYLOAD_JITTER_MIN_MS, PAYLOAD_JITTER_MAX_MS);
         }
-        if (nowMs - lastLoRaSendTime >= DATA_SEND_INTERVAL) {
-            sendLoRaImuData();
-            lastLoRaSendTime = nowMs;
+        if (nowMs - lastLoRaSendTime >= currentLoRaSendIntervalMs) {
+            bool sent = sendLoRaImuData();
+            if (sent) {
+                lastLoRaSendTime = nowMs;
+                currentLoRaSendIntervalMs = nextPayloadIntervalMs();
+            }
         }
     }
 
@@ -329,8 +447,45 @@ void loop() {
         if (rf95.recv(buf, &len)) {
             LoRaPacket pkt;
             if (packetHandler.deserializePacket(buf, len, pkt)) {
+                uint8_t ptype = pkt.header.packetType;
                 if (pkt.header.sourceID == NODE_ID) { /* skip own */ }
-                else if (pkt.header.packetType == PKT_TYPE_TIMESYNC) {
+                else if (ptype == PKT_TYPE_ACK &&
+                         pkt.header.destinationID == NODE_ID &&
+                         pkt.header.payloadLength == sizeof(AckPayload)) {
+                    AckPayload ack = {};
+                    memcpy(&ack, pkt.payload, sizeof(ack));
+                    if (DATA_ACK_ENABLE &&
+                        pendingDataAck &&
+                        ack.ackedPacketType == PKT_TYPE_FATIGUE_IMU &&
+                        ack.ackedSequence == pendingDataSeq) {
+                        pendingDataAck = false;
+                        Serial.printf("[ACK] received seq=%lu retries=%u\n",
+                                      (unsigned long)pendingDataSeq,
+                                      (unsigned)pendingDataRetries);
+                    }
+                }
+                else if ((ptype == PKT_TYPE_DATA ||
+                          pkt.header.packetType == PKT_TYPE_FATIGUE_IMU ||
+                          pkt.header.packetType == PKT_TYPE_FATIGUE_STATUS ||
+                          pkt.header.packetType == PKT_TYPE_SAFETY_CONDITION ||
+                          pkt.header.packetType == PKT_TYPE_VEHICLE_TELEMETRY ||
+                          pkt.header.packetType == PKT_TYPE_DIAGNOSTIC ||
+                          pkt.header.packetType == PKT_TYPE_ACK) &&
+                         pkt.header.nextHop == NODE_ID &&
+                         pkt.header.destinationID != NODE_ID &&
+                         pkt.header.hopCount < MAX_HOP_COUNT &&
+                         aodv.hasRouteTo(pkt.header.destinationID)) {
+                    LoRaPacket fwd = pkt;
+                    fwd.header.hopCount++;
+                    if (fwd.header.routePathLen < MAX_ROUTE_PATH) {
+                        fwd.header.routePath[fwd.header.routePathLen] = NODE_ID;
+                        fwd.header.routePathLen++;
+                    }
+                    fwd.header.nextHop = aodv.getNextHop(pkt.header.destinationID);
+                    fwd.header.checksum = LoRaPacketHandler::calculateChecksum(fwd);
+                    sendPacketCallback(fwd);
+                }
+                else if (ptype == PKT_TYPE_TIMESYNC) {
                     TimeSyncPayload ts; memcpy(&ts, pkt.payload, sizeof(TimeSyncPayload));
                     
                     // Set RTC Internal ESP32 menggunakan data dari Gateway!
@@ -339,23 +494,26 @@ void loop() {
                     tv.tv_usec = ts.millisPart * 1000;
                     settimeofday(&tv, NULL);
                     
+                    uint32_t epochMs = (uint32_t)((uint64_t)ts.epochSeconds * 1000ULL + ts.millisPart);
+                    epochOffsetMsLow32 = epochMs - (uint32_t)millis();
                     timeSynced = true;
-                } else if (pkt.header.packetType == PKT_TYPE_FATIGUE_STATUS && pkt.header.destinationID == NODE_ID) {
+                } else if (ptype == PKT_TYPE_FATIGUE_STATUS && pkt.header.destinationID == NODE_ID) {
                     FatigueStatusPayload stat; memcpy(&stat, pkt.payload, sizeof(FatigueStatusPayload));
                     // Status diterima, tanpa aksi tambahan.
-                } else if (pkt.header.packetType == PKT_TYPE_START_TEST) {
+                } else if (ptype == PKT_TYPE_START_TEST) {
                     if (pkt.header.payloadLength == sizeof(StartTestPayload)) {
                         StartTestPayload st; memcpy(&st, pkt.payload, sizeof(StartTestPayload));
                         Serial.printf("[START_TEST] SF=%u BW=%lukHz\n", st.sf, (unsigned long)st.bwKHz);
                         WebConfig::saveTestConfig(st.sf, st.bwKHz); delay(2000); ESP.restart();
                     }
-                } else if (pkt.header.packetType == PKT_TYPE_RREQ) { aodv.handleRREQ(pkt); }
-                  else if (pkt.header.packetType == PKT_TYPE_RREP) { aodv.handleRREP(pkt); }
-                  else if (pkt.header.packetType == PKT_TYPE_RERR) { aodv.handleRERR(pkt); }
-                  else if (pkt.header.packetType == PKT_TYPE_HELLO) { aodv.handleHello(pkt); }
+                } else if (ptype == PKT_TYPE_RREQ) { aodv.handleRREQ(pkt); }
+                  else if (ptype == PKT_TYPE_RREP) { aodv.handleRREP(pkt); }
+                  else if (ptype == PKT_TYPE_RERR) { aodv.handleRERR(pkt); }
+                  else if (ptype == PKT_TYPE_HELLO) { aodv.handleHello(pkt); }
             }
         }
     }
     
     delay(5);
 }
+

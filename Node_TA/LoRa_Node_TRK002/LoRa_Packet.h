@@ -20,7 +20,7 @@
 #define MAX_ROUTE_PATH   5       // Maksimum node dalam route path
 
 // ================================================================
-// PACKET HEADER — Identik di semua node & gateway
+// PACKET HEADER ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â Identik di semua node & gateway
 // ================================================================
 struct PacketHeader {
     uint8_t packetType;
@@ -52,7 +52,7 @@ struct IMUData {
 } __attribute__((packed));
 
 // ================================================================
-// DATA PAYLOADS — Semua payload WAJIB konsisten di semua folder
+// DATA PAYLOADS ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â Semua payload WAJIB konsisten di semua folder
 // ================================================================
 
 // Payload utama untuk TRK-001/002/003 (sensor dummy)
@@ -61,7 +61,7 @@ struct SensorDataPayload {
     IMUData imu;
     float batteryVoltage;
     int16_t signalStrength;
-    uint32_t txTimestamp;      // Epoch ms (low 32-bit) saat node kirim — untuk hitung latensi
+    uint32_t txTimestamp;      // Epoch ms (low 32-bit) saat node kirim ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â untuk hitung latensi
     uint32_t routeDiscMs;      // Waktu discovery terakhir (ms)
     uint8_t  routeHops;        // Jumlah hop terakhir
     uint8_t  padding[11];      // Tambahan padding agar tepat 70 Byte
@@ -70,7 +70,7 @@ struct SensorDataPayload {
 static_assert(sizeof(SensorDataPayload) <= MAX_PAYLOAD_SIZE,
               "SensorDataPayload exceeds MAX_PAYLOAD_SIZE");
 
-// Payload IMU fatigue detection (lora_saenab → Gateway)
+// Payload IMU fatigue detection (lora_saenab ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢ Gateway)
 struct ImuFatiguePayload {
     uint8_t packetType;
     uint8_t nodeId;
@@ -89,7 +89,7 @@ struct ImuFatiguePayload {
 static_assert(sizeof(ImuFatiguePayload) <= MAX_PAYLOAD_SIZE,
               "ImuFatiguePayload exceeds MAX_PAYLOAD_SIZE");
 
-// Payload status alarm fatigue (Gateway → lora_saenab)
+// Payload status alarm fatigue (Gateway ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢ lora_saenab)
 struct FatigueStatusPayload {
     uint8_t packetType;
     uint8_t targetNodeId;
@@ -99,7 +99,7 @@ struct FatigueStatusPayload {
 static_assert(sizeof(FatigueStatusPayload) <= MAX_PAYLOAD_SIZE,
               "FatigueStatusPayload exceeds MAX_PAYLOAD_SIZE");
 
-// Payload safety condition flags (lora_nailah → Gateway)
+// Payload safety condition flags (lora_nailah ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢ Gateway)
 struct SafetyConditionPayload {
     uint8_t packetType;
     uint8_t nodeId;
@@ -112,7 +112,7 @@ struct SafetyConditionPayload {
 static_assert(sizeof(SafetyConditionPayload) <= MAX_PAYLOAD_SIZE,
               "SafetyConditionPayload exceeds MAX_PAYLOAD_SIZE");
 
-// Payload vehicle telemetry lengkap (lora_nailah → Gateway, opsional)
+// Payload vehicle telemetry lengkap (lora_nailah ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢ Gateway, opsional)
 struct VehicleTelemetryPayload {
     double latitude;
     double longitude;
@@ -149,8 +149,15 @@ struct VehicleTelemetryPayload {
     uint8_t  padding[23];      // Tambahan padding agar tepat 120 Byte
 } __attribute__((packed));
 
-static_assert(sizeof(VehicleTelemetryPayload) <= MAX_PAYLOAD_SIZE,
-              "VehicleTelemetryPayload exceeds MAX_PAYLOAD_SIZE");
+
+// ACK payload untuk konfirmasi penerimaan paket data (app-layer reliability)
+struct AckPayload {
+    uint8_t  ackedPacketType;
+    uint32_t ackedSequence;
+} __attribute__((packed));
+
+static_assert(sizeof(AckPayload) <= MAX_PAYLOAD_SIZE,
+              "AckPayload exceeds MAX_PAYLOAD_SIZE");
 
 // ================================================================
 // AODV ROUTING PAYLOADS
@@ -181,13 +188,13 @@ struct RERRPayload {
 // TIME SYNC & DIAGNOSTIC PAYLOADS
 // ================================================================
 
-// Time Sync Payload — Gateway broadcast epoch ke semua Node (NTP Sync)
+// Time Sync Payload ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â Gateway broadcast epoch ke semua Node (NTP Sync)
 struct TimeSyncPayload {
     uint32_t epochSeconds;     // Unix timestamp (detik sejak 1 Jan 1970)
     uint16_t millisPart;       // Milidetik dalam detik ini (0-999)
 } __attribute__((packed));
 
-// Route Discovery Diagnostic Payload — Node -> Gateway (pengukuran waktu pembentukan rute)
+// Route Discovery Diagnostic Payload ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â Node -> Gateway (pengukuran waktu pembentukan rute)
 struct DiscoveryDiagPayload {
     uint8_t originNodeId;      // Node yang memulai route discovery
     uint8_t targetNodeId;      // Node tujuan pencarian rute
@@ -202,7 +209,7 @@ struct DiscoveryDiagPayload {
 static_assert(sizeof(DiscoveryDiagPayload) <= MAX_PAYLOAD_SIZE,
               "DiscoveryDiagPayload exceeds MAX_PAYLOAD_SIZE");
 
-// START_TEST Payload — Gateway broadcast untuk mulai test SF/BW baru
+// START_TEST Payload ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â Gateway broadcast untuk mulai test SF/BW baru
 struct StartTestPayload {
     uint8_t  sf;               // Spreading Factor baru (7-12)
     uint32_t bwKHz;            // Bandwidth baru dalam kHz (125 atau 250)
@@ -221,13 +228,11 @@ struct LoRaPacket {
 } __attribute__((packed));
 
 // ================================================================
-// PACKET HANDLER CLASS — Semua create methods tersedia di semua folder
+// PACKET HANDLER CLASS ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â Semua create methods tersedia di semua folder
 // ================================================================
 class LoRaPacketHandler {
 public:
-    LoRaPacketHandler();
-
-    // Data packets
+    LoRaPacketHandler();    // Data packets
     static LoRaPacket createDataPacket(uint8_t sourceID, uint8_t destID,
                                        const SensorDataPayload& data, uint32_t seqNum);
     static LoRaPacket createImuFatiguePacket(uint8_t sourceID, uint8_t destID,
@@ -238,6 +243,9 @@ public:
                                                   const SafetyConditionPayload& data, uint32_t seqNum);
     static LoRaPacket createVehicleTelemetryPacket(uint8_t sourceID, uint8_t destID,
                                                    const VehicleTelemetryPayload& data, uint32_t seqNum);
+
+    static LoRaPacket createAckPacket(uint8_t sourceID, uint8_t destID,
+                                       const AckPayload& data, uint32_t seqNum);
     static LoRaPacket createDiagnosticPacket(uint8_t sourceID, uint8_t destID,
                                              const DiscoveryDiagPayload& data, uint32_t seqNum);
     static LoRaPacket createStartTestPacket(uint8_t sourceID, const StartTestPayload& data);
@@ -265,3 +273,4 @@ private:
 };
 
 #endif // LORA_PACKET_H
+

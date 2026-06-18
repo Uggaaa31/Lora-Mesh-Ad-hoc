@@ -112,7 +112,27 @@ LoRaPacket LoRaPacketHandler::createVehicleTelemetryPacket(uint8_t sourceID, uin
     return packet;
 }
 
-// Create Route Discovery Diagnostic packet (Node -> Gateway)
+
+// Create ACK packet (Gateway <-> Node)
+LoRaPacket LoRaPacketHandler::createAckPacket(uint8_t sourceID, uint8_t destID,
+                                              const AckPayload& data,
+                                              uint32_t seqNum) {
+    LoRaPacket packet;
+    packet.header.packetType = 0x07;  // PKT_TYPE_ACK
+    packet.header.sourceID = sourceID;
+    packet.header.destinationID = destID;
+    packet.header.sequenceNum = seqNum;
+    packet.header.hopCount = 0;
+    packet.header.payloadLength = sizeof(AckPayload);
+    packet.header.routePathLen = 1;
+    memset(packet.header.routePath, 0, MAX_ROUTE_PATH);
+    packet.header.routePath[0] = sourceID;
+
+    memcpy(packet.payload, &data, sizeof(AckPayload));
+    packet.header.checksum = calculateChecksum(packet);
+    return packet;
+}
+
 LoRaPacket LoRaPacketHandler::createDiagnosticPacket(uint8_t sourceID, uint8_t destID,
                                                      const DiscoveryDiagPayload& data,
                                                      uint32_t seqNum) {
@@ -334,6 +354,7 @@ const char* LoRaPacketHandler::getPacketTypeName(uint8_t type) {
         case 0x04: return "RERR";
         case 0x05: return "HELLO";
         case 0x06: return "TIMESYNC";
+        case 0x07: return "ACK";
         case 0x09: return "VEHICLE_TELEMETRY";
         case 0x0A: return "DIAGNOSTIC";
         case 0x0B: return "START_TEST";
@@ -351,3 +372,5 @@ uint16_t LoRaPacketHandler::computeChecksum(const uint8_t* data, int length) {
     }
     return sum;
 }
+
+

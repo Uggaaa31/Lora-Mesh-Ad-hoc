@@ -336,6 +336,7 @@ void setup() {
     rf95.setCodingRate4(runtimeCfg.cr);
     rf95.setTxPower(runtimeCfg.txPower, runtimeCfg.useRFO);
     rf95.setPreambleLength(LORA_PREAMBLE_LENGTH);
+    rf95.setCADTimeout(LORA_CAD_TIMEOUT_MS);
     Serial.printf("LoRa OK: SF=%d BW=%dkHz CR=4/%d Freq=%.1fMHz\n",
                   runtimeCfg.sf, runtimeCfg.bwKHz, runtimeCfg.cr, LORA_FREQUENCY);
 
@@ -346,9 +347,9 @@ void setup() {
     aodv.begin();
     aodv.onSendPacket = sendPacketCallback;
 
-    // WiFi & MQTT Init
-    connect_wifi();
-    start_mqtt();
+    // WiFi & MQTT Init (Dimatikan untuk Skenario 5)
+    // connect_wifi();
+    // start_mqtt();
 }
 
 void loop() {
@@ -360,7 +361,7 @@ void loop() {
     read_bno055_and_filter(nowMs);
     
     // 2. Connectivity Checks
-    bool internetOk = (WiFi.status() == WL_CONNECTED && mqttConnected);
+    bool internetOk = false; // (WiFi.status() == WL_CONNECTED && mqttConnected);
     
     // 3. MQTT Publish (If Online)
     if (internetOk && (nowMs - lastPub >= pubIntervalMs)) {

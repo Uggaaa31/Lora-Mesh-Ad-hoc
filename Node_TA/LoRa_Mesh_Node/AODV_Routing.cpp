@@ -298,9 +298,34 @@ void AODVRouting::retryRREQ() {
         if (pendingRREQs[i].active) {
             // Check if we have route now
             if (hasRouteTo(pendingRREQs[i].destinationID)) {
+                unsigned long discoveryTime = now - pendingRREQs[i].rreqSentTime;
+                routeDiscoverySuccess++;
+
+                // Emit diagnostic payload (BERHASIL via route yang sudah tersedia)
+                lastDiagResult = {};
+                lastDiagResult.originNodeId = myNodeID;
+                lastDiagResult.targetNodeId = pendingRREQs[i].destinationID;
+                if (epochOffsetPtr) {
+                    lastDiagResult.rreqTimestamp = (uint32_t)(pendingRREQs[i].rreqSentTime) + *epochOffsetPtr;
+                    lastDiagResult.rrepTimestamp = (uint32_t)now + *epochOffsetPtr;
+                } else {
+                    lastDiagResult.rreqTimestamp = (uint32_t)(pendingRREQs[i].rreqSentTime);
+                    lastDiagResult.rrepTimestamp = (uint32_t)now;
+                }
+                lastDiagResult.discoveryMs = discoveryTime;
+                lastDiagResult.hopCount = getRouteHopCount(pendingRREQs[i].destinationID);
+                lastDiagResult.retryCount = pendingRREQs[i].retryCount;
+                lastDiagResult.success = 1;
+                hasDiagResult = true;
+                if (pendingRREQs[i].destinationID < MAX_NODES) {
+                    lastSuccessfulDiscoveryMs[pendingRREQs[i].destinationID] = discoveryTime;
+                    lastSuccessfulDiscoveryHops[pendingRREQs[i].destinationID] = lastDiagResult.hopCount;
+                }
+                if (onDiagnosticReady) { onDiagnosticReady(lastDiagResult); }
+
                 pendingRREQs[i].active = false;
-                Serial.printf("Route found for dest=%d, canceling RREQ\n", 
-                             pendingRREQs[i].destinationID);
+                Serial.printf("Route found for dest=%d, canceling RREQ (retries=%u)\n", 
+                             pendingRREQs[i].destinationID, pendingRREQs[i].retryCount);
                 continue;
             }
             

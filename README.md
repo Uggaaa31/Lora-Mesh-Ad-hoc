@@ -71,7 +71,7 @@ Tugas Akhir_Lora_Gabungan_parameter_Retry/
 | TRK-001 | ESP32-S3 | 1 | 5 | 7 | 1 | SCK=42, MOSI=41, MISO=40 |
 | TRK-002 | ESP32-S3 | 2 | 5 | 7 | 1 | SCK=42, MOSI=41, MISO=40 |
 | TRK-003 | ESP32-S3 | 3 | 5 | 7 | 1 | SCK=42, MOSI=41, MISO=40 |
-| lora_saenab | ESP32-C3 | 4 | 7 | 6 | 5 | SCK=4, MOSI=6, MISO=5 |
+| lora_saenab | ESP32-C3 | 4 | 7 | 10 | 1 | SCK=4, MOSI=6, MISO=5 |
 | lora_nailah | ESP32-S3 | 5 | 5 | 7 | 1 | SCK=42, MOSI=41, MISO=40 |
 
 ## Parameter LoRa Default
@@ -220,13 +220,13 @@ static const WiFiProfile WIFI_PROFILES[] = {
 
 | Topic | Sumber | Deskripsi |
 |-------|--------|-----------|
-| `lora/fms/lora` | Gateway | Sensor data per node |
-| `lora/fms/lora/status` | Gateway | QoS summary |
-| `lora/fms/lora/debug` | Gateway | Debug messages |
+| `lora/fms` | Gateway | Sensor data per node |
+| `lora/fms/status` | Gateway | QoS summary |
+| `lora/fms/debug` | Gateway | Debug messages |
 | `lora/fms/fatigue_detection/imu` | Gateway | IMU fatigue data |
 | `lora/fms/fatigue_detection/vision` | Gateway ↔ Vision | Alarm control |
-| `lora/fms/lora/safety/condition` | Gateway | Safety condition flags |
-| `lora/fms/lora/diagnostic/route` | Gateway | Route discovery metrics |
+| `lora/fms/safety/condition` | Gateway | Safety condition flags |
+| `lora/fms/diagnostic/route` | Gateway | Route discovery metrics |
 
 ## Catatan Penting
 

@@ -1,3 +1,4 @@
+#include <Arduino.h>
 #include <Wire.h>
 #include <SPI.h>
 #include <math.h>
@@ -66,13 +67,23 @@ uint32_t epochOffsetMsLow32 = 0;
 bool timeSynced = false;
 unsigned long lastPublishMs = 0;
 unsigned long lastStatusPrintMs = 0;
-uint32_t safetySequence = 0;
+uint32_t vehicleSequence = 0;
+
+static bool pendingDataAck = false;
+static LoRaPacket pendingDataPacket;
+static uint32_t pendingDataSeq = 0;
+static uint8_t pendingDataRetries = 0;
+static uint8_t consecutiveAckFailures = 0;
+static unsigned long pendingDataLastTxMs = 0;
 
 void initLoRa();
 bool initBNO055();
 void initGPS();
 void updateTelemetry(unsigned long nowMs);
-bool sendSafetyCondition(unsigned long nowMs);
+bool sendVehicleTelemetry(unsigned long nowMs);
+uint32_t getDataAckTimeoutMs();
+uint8_t getDataAckMaxRetries();
+void processDataAckTimeout(unsigned long nowMs);
 void receivePackets();
 void handleReceivedPacket(const LoRaPacket& packet);
 void sendPacketCallback(const LoRaPacket& packet);
@@ -151,13 +162,14 @@ void sendDiagnosticCallback(const DiscoveryDiagPayload& diag) {
     pkt.header.nextHop = aodv.getNextHop(GATEWAY_ID);
     pkt.header.checksum = LoRaPacketHandler::calculateChecksum(pkt);
     sendPacketCallback(pkt);
-    Serial.printf("[DIAG TX] target=%u discovery=%lums hops=%u success=%u\n",
+    Serial.printf("[DIAG TX] target=%u discovery=%lums hops=%u retries=%u success=%u\n",
                   diag.targetNodeId, (unsigned long)diag.discoveryMs,
-                  diag.hopCount, diag.success);
+                  diag.hopCount, diag.retryCount, diag.success);
 }
 void setup() {
     Serial.begin(SERIAL_BAUD);
     delay(1000);
+    randomSeed((uint32_t)micros() ^ ((uint32_t)NODE_ID << 16));
 
     Serial.println();
     Serial.println("========================================");
@@ -180,6 +192,9 @@ void setup() {
                   (unsigned long)runtimeCfg.bwKHz,
                   runtimeCfg.cr,
                   runtimeCfg.txPower);
+    Serial.printf("[PAYLOAD] VehicleTelemetryPayload=%u bytes (LoRa total=%u bytes)\n",
+                  (unsigned)sizeof(VehicleTelemetryPayload),
+                  (unsigned)(sizeof(PacketHeader) + sizeof(VehicleTelemetryPayload)));
 
     WebConfig::begin(NODE_NAME, runtimeCfg, NODE_ID);
     initLoRa();
@@ -204,10 +219,17 @@ void setup() {
 }
 
 // ================================================================
-// MAIN LOOP — Interval Tetap 3 Detik + Offset Per Node
+// MAIN LOOP Ã¢â‚¬â€ Interval + Payload Jitter Acak + Offset Per Node
 // ================================================================
 unsigned long lastSendTime = 0;
+unsigned long currentSendIntervalMs = DATA_SEND_INTERVAL;
 bool initialOffsetDone = false;
+static const uint16_t PAYLOAD_JITTER_MIN_MS = 100;
+static const uint16_t PAYLOAD_JITTER_MAX_MS = 500;
+
+static unsigned long nextPayloadIntervalMs() {
+    return DATA_SEND_INTERVAL + (unsigned long)random(PAYLOAD_JITTER_MIN_MS, PAYLOAD_JITTER_MAX_MS + 1);
+}
 
 void loop() {
     unsigned long nowMs = millis();
@@ -215,20 +237,25 @@ void loop() {
     WebConfig::handle();
     aodv.update();
     receivePackets();
+    processDataAckTimeout(nowMs);
     updateTelemetry(nowMs);
 
-    // FIXED INTERVAL SCHEDULING (3 detik + offset NODE_ID * 500ms)
+    // FIXED BASE INTERVAL + RANDOM JITTER (+ offset NODE_ID * 500ms)
     if (!initialOffsetDone) {
-        lastSendTime = nowMs - DATA_SEND_INTERVAL + (NODE_ID * 500UL);
+        currentSendIntervalMs = nextPayloadIntervalMs();
+        lastSendTime = nowMs - currentSendIntervalMs + (NODE_ID * 500UL);
         initialOffsetDone = true;
+        Serial.printf("[TX] Payload jitter aktif: +%u..+%u ms\n",
+                      PAYLOAD_JITTER_MIN_MS, PAYLOAD_JITTER_MAX_MS);
     }
 
-    if (nowMs - lastSendTime >= DATA_SEND_INTERVAL) {
-        bool ok = sendSafetyCondition(nowMs);
+    if (nowMs - lastSendTime >= currentSendIntervalMs) {
+        bool ok = sendVehicleTelemetry(nowMs);
         if (ok) {
             lastSendTime = nowMs;
-            Serial.printf("[TX] Sent OK | SF=%d BW=%dkHz | interval=%dms\n",
-                          runtimeCfg.sf, runtimeCfg.bwKHz, DATA_SEND_INTERVAL);
+            currentSendIntervalMs = nextPayloadIntervalMs();
+            Serial.printf("[TX] Sent OK | SF=%d BW=%dkHz | interval=%lums\n",
+                          runtimeCfg.sf, runtimeCfg.bwKHz, currentSendIntervalMs);
         }
     }
 
@@ -241,9 +268,10 @@ void loop() {
                       drActive ? "ON" : "OFF",
                       lastGpsValid ? "VALID" : "INVALID",
                       speedMps);
-        Serial.printf("[CONFIG] SF=%d BW=%dkHz Interval=%dms Offset=%dms\n",
+        Serial.printf("[CONFIG] SF=%d BW=%dkHz IntervalBase=%dms Offset=%dms Jitter=%u-%ums\n",
                       runtimeCfg.sf, runtimeCfg.bwKHz,
-                      DATA_SEND_INTERVAL, NODE_ID * 500);
+                      DATA_SEND_INTERVAL, NODE_ID * 500,
+                      PAYLOAD_JITTER_MIN_MS, PAYLOAD_JITTER_MAX_MS);
         lastStatusPrintMs = nowMs;
     }
 
@@ -294,6 +322,7 @@ void initLoRa() {
     rf95.setCodingRate4(runtimeCfg.cr);
     rf95.setTxPower(pwr, runtimeCfg.useRFO);
     rf95.setPreambleLength(LORA_PREAMBLE_LENGTH);
+    rf95.setCADTimeout(LORA_CAD_TIMEOUT_MS);
 
     Serial.printf("[LoRa] OK SF=%d BW=%.0fkHz CR=4/%d Pwr=%ddBm (%s)\n",
                   runtimeCfg.sf,
@@ -449,41 +478,52 @@ void updateTelemetry(unsigned long nowMs) {
     lastSatellites = satsValue;
 }
 
-bool sendSafetyCondition(unsigned long nowMs) {
+bool sendVehicleTelemetry(unsigned long nowMs) {
+    if (DATA_ACK_ENABLE && pendingDataAck) {
+        return false;
+    }
+
     if (!aodv.hasRouteTo(GATEWAY_ID)) {
         Serial.println("[LoRa] No route to gateway. Starting discovery.");
         aodv.initiateRouteDiscovery(GATEWAY_ID);
         return false;
     }
 
-    SafetyConditionPayload payload = {};
-    payload.packetType = PKT_TYPE_SAFETY_CONDITION;
-    payload.nodeId = NODE_ID;
-    payload.ts = timeSynced
+    VehicleTelemetryPayload payload = {};
+    payload.latitude = lat;
+    payload.longitude = lon;
+    payload.headingDeg = headingDeg;
+    payload.speedMps = speedMps;
+    payload.drActive = drActive ? 1 : 0;
+    payload.gpsValid = lastGpsValid ? 1 : 0;
+    payload.gpsSpeed = lastGpsSpeed;
+    payload.gpsHeading = lastGpsHeading;
+    payload.hdop = lastHdop;
+    payload.satellites = lastSatellites;
+    payload.accelForward = lastAccelForward;
+    payload.ax = lastAx;
+    payload.ay = lastAy;
+    payload.az = lastAz;
+    payload.mx = lastMx;
+    payload.my = lastMy;
+    payload.mz = lastMz;
+    payload.pitch = pitchDeg;
+    payload.yaw = rawYawDeg;
+    payload.roll = rollDeg;
+    payload.dt = lastDt;
+    payload.calSys = calSys;
+    payload.calGyro = calGyro;
+    payload.calAccel = calAccel;
+    payload.calMag = calMag;
+    payload.rollover = isRollover;
+    payload.rolloverRisk = isRolloverRisk;
+    payload.harshBraking = isHarshBraking;
+    payload.overspeed = isOverspeed;
+    payload.txTimestamp = timeSynced
         ? ((uint32_t)millis() + epochOffsetMsLow32)
         : (uint32_t)nowMs;
-    payload.flags = 0;
     payload.routeDiscMs = 0;
     payload.routeHops = 0;
-
-    if (lastGpsValid) {
-        payload.flags |= FLAG_GPS_VALID;
-    }
-    if (drActive) {
-        payload.flags |= FLAG_DR_ACTIVE;
-    }
-    if (isRolloverRisk) {
-        payload.flags |= FLAG_ROLLOVER_RISK;
-    }
-    if (isRollover) {
-        payload.flags |= FLAG_ROLLOVER;
-    }
-    if (isHarshBraking) {
-        payload.flags |= FLAG_HARSH_BRAKE;
-    }
-    if (isOverspeed) {
-        payload.flags |= FLAG_OVERSPEED;
-    }
 
     uint32_t lastDiscoveryMs = 0;
     uint8_t lastDiscoveryHops = 0;
@@ -495,31 +535,102 @@ bool sendSafetyCondition(unsigned long nowMs) {
         payload.routeHops = lastDiscoveryHops;
     }
 
-    LoRaPacket packet = LoRaPacketHandler::createSafetyConditionPacket(
+    uint32_t nextSeq = vehicleSequence + 1;
+    LoRaPacket packet = LoRaPacketHandler::createVehicleTelemetryPacket(
         NODE_ID,
         GATEWAY_ID,
         payload,
-        ++safetySequence
+        nextSeq
     );
     packet.header.nextHop = aodv.getNextHop(GATEWAY_ID);
     packet.header.checksum = LoRaPacketHandler::calculateChecksum(packet);
 
     Serial.printf(
-        "[lora_nailah TX SAFETY flags] ts=%lu flags=0x%02X gpsValid=%u drActive=%u rolloverRisk=%u rollover=%u harshBraking=%u overspeed=%u route_ms=%lu route_hops=%u\n",
-        (unsigned long)payload.ts,
-        payload.flags,
-        lastGpsValid ? 1 : 0,
-        drActive ? 1 : 0,
-        isRolloverRisk ? 1 : 0,
-        isRollover ? 1 : 0,
-        isHarshBraking ? 1 : 0,
-        isOverspeed ? 1 : 0,
+        "[lora_nailah TX VEHICLE120] ts=%lu lat=%.6f lon=%.6f spd=%.2f heading=%.2f gpsValid=%u dr=%u roll=%u risk=%u brake=%u over=%u route_ms=%lu route_hops=%u\n",
+        (unsigned long)payload.txTimestamp,
+        payload.latitude,
+        payload.longitude,
+        payload.speedMps,
+        payload.headingDeg,
+        payload.gpsValid,
+        payload.drActive,
+        payload.rollover,
+        payload.rolloverRisk,
+        payload.harshBraking,
+        payload.overspeed,
         (unsigned long)payload.routeDiscMs,
         payload.routeHops
     );
 
     sendPacketCallback(packet);
+    vehicleSequence = nextSeq;
+    if (DATA_ACK_ENABLE) {
+        pendingDataAck = true;
+        pendingDataPacket = packet;
+        pendingDataSeq = nextSeq;
+        pendingDataRetries = 0;
+        pendingDataLastTxMs = millis();
+    }
     return true;
+}
+
+uint32_t getDataAckTimeoutMs() {
+    uint32_t baseMs;
+    switch (runtimeCfg.sf) {
+        case 7:  baseMs = DATA_ACK_TIMEOUT_SF7_MS; break;
+        case 9:  baseMs = DATA_ACK_TIMEOUT_SF9_MS; break;
+        case 12: baseMs = DATA_ACK_TIMEOUT_SF12_MS; break;
+        default: baseMs = DATA_ACK_TIMEOUT_MS; break;
+    }
+    uint8_t hops = aodv.getRouteHopCount(GATEWAY_ID);
+    if (hops == 0) hops = 1;
+    return (baseMs * hops) + ((hops - 1) * 500);
+}
+
+uint8_t getDataAckMaxRetries() {
+    switch (runtimeCfg.sf) {
+        case 7:  return DATA_ACK_MAX_RETRIES_SF7;
+        case 9:  return DATA_ACK_MAX_RETRIES_SF9;
+        case 12: return DATA_ACK_MAX_RETRIES_SF12;
+        default: return DATA_ACK_MAX_RETRIES;
+    }
+}
+
+void processDataAckTimeout(unsigned long nowMs) {
+    if (!DATA_ACK_ENABLE || !pendingDataAck) {
+        return;
+    }
+    const uint32_t ackTimeoutMs = getDataAckTimeoutMs();
+    const uint8_t ackMaxRetries = getDataAckMaxRetries();
+
+    if ((nowMs - pendingDataLastTxMs) < ackTimeoutMs) {
+        return;
+    }
+    if (pendingDataRetries >= ackMaxRetries) {
+        Serial.printf("[ACK] timeout seq=%lu retries=%u, drop\n",
+                      (unsigned long)pendingDataSeq,
+                      (unsigned)pendingDataRetries);
+        pendingDataAck = false;
+        
+        consecutiveAckFailures++;
+        if (consecutiveAckFailures >= 5) {
+            Serial.println("[AODV] Link terputus (3x ACK Timeout berturut-turut)! Menghapus rute lama...");
+            aodv.invalidateRoute(GATEWAY_ID);
+            consecutiveAckFailures = 0;
+        } else {
+            Serial.printf("[AODV] Paket gagal, tapi rute dipertahankan (%d/3 kegagalan)\n", consecutiveAckFailures);
+        }
+        
+        return;
+    }
+
+    pendingDataRetries++;
+    pendingDataLastTxMs = nowMs;
+    sendPacketCallback(pendingDataPacket);
+    Serial.printf("[ACK] retry %u/%u seq=%lu\n",
+                  (unsigned)pendingDataRetries,
+                  (unsigned)ackMaxRetries,
+                  (unsigned long)pendingDataSeq);
 }
 
 void receivePackets() {
@@ -543,13 +654,24 @@ void handleReceivedPacket(const LoRaPacket& packet) {
         return;
     }
 
-    // Duplicate detection for data packets
     uint8_t ptype = packet.header.packetType;
+    const bool isForwardPayload =
+        (ptype == PKT_TYPE_DATA ||
+         ptype == PKT_TYPE_FATIGUE_IMU ||
+         ptype == PKT_TYPE_FATIGUE_STATUS ||
+         ptype == PKT_TYPE_SAFETY_CONDITION ||
+         ptype == PKT_TYPE_VEHICLE_TELEMETRY ||
+         ptype == PKT_TYPE_DIAGNOSTIC ||
+         ptype == PKT_TYPE_ACK);
+
+    // Duplicate detection hanya untuk paket tujuan node ini.
+    // Paket transit dibiarkan lewat agar retry seq yang sama tidak ter-drop.
     static struct { uint8_t src; uint32_t seq; uint8_t type; unsigned long ts; bool valid; } _dupCache[32];
     static uint8_t _dupIdx = 0;
-    if (ptype == PKT_TYPE_DATA || ptype == PKT_TYPE_FATIGUE_IMU ||
-        ptype == PKT_TYPE_SAFETY_CONDITION || ptype == PKT_TYPE_VEHICLE_TELEMETRY ||
-        ptype == PKT_TYPE_DIAGNOSTIC) {
+    if (packet.header.destinationID == NODE_ID &&
+        (ptype == PKT_TYPE_DATA || ptype == PKT_TYPE_FATIGUE_IMU ||
+         ptype == PKT_TYPE_SAFETY_CONDITION || ptype == PKT_TYPE_VEHICLE_TELEMETRY ||
+         ptype == PKT_TYPE_DIAGNOSTIC || ptype == PKT_TYPE_ACK)) {
         unsigned long now = millis();
         for (int i = 0; i < 32; i++) {
             if (_dupCache[i].valid && _dupCache[i].src == packet.header.sourceID &&
@@ -560,6 +682,24 @@ void handleReceivedPacket(const LoRaPacket& packet) {
         _dupIdx = (_dupIdx + 1) % 32;
     }
 
+    if (ptype == PKT_TYPE_ACK &&
+        packet.header.destinationID == NODE_ID &&
+        packet.header.payloadLength == sizeof(AckPayload)) {
+        AckPayload ack = {};
+        memcpy(&ack, packet.payload, sizeof(ack));
+        if (DATA_ACK_ENABLE &&
+            pendingDataAck &&
+            ack.ackedPacketType == PKT_TYPE_VEHICLE_TELEMETRY &&
+            ack.ackedSequence == pendingDataSeq) {
+            pendingDataAck = false;
+            consecutiveAckFailures = 0;
+            Serial.printf("[ACK] received seq=%lu retries=%u\n",
+                          (unsigned long)pendingDataSeq,
+                          (unsigned)pendingDataRetries);
+        }
+        return;
+    }
+
     switch (ptype) {
         case PKT_TYPE_DATA:
         case PKT_TYPE_FATIGUE_IMU:
@@ -567,7 +707,9 @@ void handleReceivedPacket(const LoRaPacket& packet) {
         case PKT_TYPE_SAFETY_CONDITION:
         case PKT_TYPE_VEHICLE_TELEMETRY:
         case PKT_TYPE_DIAGNOSTIC:
-            if (packet.header.nextHop == NODE_ID &&
+        case PKT_TYPE_ACK:
+            if (isForwardPayload &&
+                packet.header.nextHop == NODE_ID &&
                 packet.header.destinationID != NODE_ID) {
                 forwardPacket(packet);
             }
@@ -614,6 +756,10 @@ bool forwardPacket(const LoRaPacket& packet) {
 
     LoRaPacket forwarded = packet;
     forwarded.header.hopCount++;
+    if (forwarded.header.routePathLen < MAX_ROUTE_PATH) {
+        forwarded.header.routePath[forwarded.header.routePathLen] = NODE_ID;
+        forwarded.header.routePathLen++;
+    }
     forwarded.header.nextHop = aodv.getNextHop(packet.header.destinationID);
     forwarded.header.checksum = LoRaPacketHandler::calculateChecksum(forwarded);
     sendPacketCallback(forwarded);
@@ -624,10 +770,15 @@ void sendPacketCallback(const LoRaPacket& packet) {
     uint8_t buf[RH_RF95_MAX_MESSAGE_LEN];
     int len = packetHandler.serializePacket(packet, buf, sizeof(buf));
 
-    delay(random(30, 150));
+    if (packet.header.packetType == PKT_TYPE_ACK) {
+        delay(random(5, 20));
+    } else {
+        delay(random(30, 150));
+    }
     if (len > 0) {
         rf95.send(buf, len);
         rf95.waitPacketSent();
         rf95.setModeRx();
     }
 }
+

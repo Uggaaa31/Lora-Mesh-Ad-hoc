@@ -25,11 +25,12 @@ struct WiFiProfile {
 // ================================================================
 #define LORA_FREQUENCY         921.0   // MHz - Sesuai regulasi Indonesia (Kominfo)
 #define LORA_BANDWIDTH         125E3   // 125 kHz (ganti ke 250E3 untuk BW=250 kHz)
-#define LORA_SPREADING_FACTOR  7       // SF7 (ganti 7-12 untuk skenario 4)
+#define LORA_SPREADING_FACTOR  9       // SF7 (ganti 7-12 untuk skenario 4)
 #define LORA_CODING_RATE       5       // 4/5 (tetap untuk semua skenario)
 #define LORA_TX_POWER          20      // dBm (RFO path, max 15)
 #define LORA_USE_RFO           false    // true = RFO, false = PA_BOOST
 #define LORA_PREAMBLE_LENGTH   8       // default
+#define LORA_CAD_TIMEOUT_MS    800     // tunggu kanal clear sebelum TX
 #define LORA_DEBUG_DUMP_REGS   false   // true untuk dump register LoRa saat boot
 
 // ================================================================
@@ -74,7 +75,7 @@ struct WiFiProfile {
 #define PKT_TYPE_RREP       0x03     // Route Reply
 #define PKT_TYPE_RERR       0x04     // Route Error
 #define PKT_TYPE_HELLO      0x05     // Hello message
-#define PKT_TYPE_TIMESYNC   0x06     // Time Sync (Gateway -> Nodes, untuk akurasi latensi)
+#define PKT_TYPE_ACK        0x07     // ACK data packet (app-layer reliability)
 #define PKT_TYPE_FATIGUE_IMU    0x31 // IMU fatigue payload (Node -> Gateway)
 #define PKT_TYPE_FATIGUE_STATUS 0x32 // Alarm/status command (Gateway -> Node)
 #define PKT_TYPE_SAFETY_CONDITION 0x41 // Safety condition flags (Node -> Gateway)
@@ -85,11 +86,22 @@ struct WiFiProfile {
 // ================================================================
 // DATA COLLECTION PARAMETERS
 // CATATAN: Gateway hanya MENERIMA data, bukan mengirim sensor.
-// Nilai berikut adalah REFERENSI — harus sama dengan Node_TA/config.h
+// Nilai berikut adalah REFERENSI â€” harus sama dengan Node_TA/config.h
 // ================================================================
 #define DATA_SEND_INTERVAL  3000     // 3 detik - interval kirim sensor (harus sama dengan Node)
 #define GPS_UPDATE_INTERVAL 100      // 100 ms - Referensi (harus sama dengan Node)
-#define IMU_UPDATE_INTERVAL 100      // 100 ms - Referensi (harus sama dengan Node)
+#define DATA_ACK_ENABLE     true     // true = aktifkan ACK data + retry terbatas
+#define DATA_ACK_TIMEOUT_MS 2500     // Fallback timeout ACK (ms) bila SF bukan 7/9/12
+#define DATA_ACK_MAX_RETRIES 1       // Fallback retry maksimum bila SF bukan 7/9/12
+
+// Tuning ACK khusus SF untuk trade-off delay vs PDR
+#define DATA_ACK_TIMEOUT_SF7_MS   1000
+#define DATA_ACK_TIMEOUT_SF9_MS   1500
+#define DATA_ACK_TIMEOUT_SF12_MS  7000
+
+#define DATA_ACK_MAX_RETRIES_SF7  1
+#define DATA_ACK_MAX_RETRIES_SF9  1
+#define DATA_ACK_MAX_RETRIES_SF12 1
 #define OBSERVATION_PERIOD_MS            300000UL
 #define DEFAULT_NODE_SEND_INTERVAL_MS    3000UL
 #define FATIGUE_NODE_SEND_INTERVAL_MS    3000UL
@@ -181,7 +193,8 @@ struct WiFiProfile {
 #define GPS_ALT_RANGE       50.0
 
 // IMU Dummy
-#define IMU_ACCEL_RANGE     2.0      // ±2g
-#define IMU_GYRO_RANGE      250.0    // ±250 deg/s
+#define IMU_ACCEL_RANGE     2.0      // Â±2g
+#define IMU_GYRO_RANGE      250.0    // Â±250 deg/s
 
 #endif // CONFIG_H
+

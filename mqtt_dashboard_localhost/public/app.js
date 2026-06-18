@@ -58,6 +58,16 @@ function fmtTime(ts) {
   }).format(new Date(ts));
 }
 
+function fmtTimeMs(ts) {
+  if (!ts || isNaN(Number(ts))) return "-";
+  const d = new Date(Number(ts));
+  const hh = String(d.getHours()).padStart(2, "0");
+  const mm = String(d.getMinutes()).padStart(2, "0");
+  const ss = String(d.getSeconds()).padStart(2, "0");
+  const ms = String(d.getMilliseconds()).padStart(3, "0");
+  return `${hh}:${mm}:${ss}.${ms}`;
+}
+
 function fmtNum(value, digits = 2) {
   if (value === null || value === undefined || Number.isNaN(value)) {
     return "-";
@@ -258,7 +268,8 @@ function renderConfig(config) {
     `Route Topic: ${esc(config.topicDiagnostic)}`,
     `Status Topic: ${esc(config.topicStatus)}`,
     `Interval default node: ${esc(config.nodeSendIntervalMs)} ms`,
-    `Durasi trial default: ${esc(Math.round(Number(config.manualDefaultDurationMs || 300000) / 60000))} menit`
+    `Durasi trial default: ${esc(Math.round(Number(config.manualDefaultDurationMs || 300000) / 60000))} menit`,
+    `Target paket trial: ${esc(config.manualDefaultPacketTarget || 20)} paket/node`
   ].join("<br>");
 }
 
@@ -307,6 +318,8 @@ function renderSummary(state) {
 
   const targetDurationMs = Number(latest.targetDurationMs || 0);
   const hasTarget = Number.isFinite(targetDurationMs) && targetDurationMs > 0;
+  const targetPacketCount = Number(latest.targetPacketCount || 0);
+  const hasPacketTarget = Number.isFinite(targetPacketCount) && targetPacketCount > 0;
   const elapsedMs = latest.durationMs || 0;
   const remainingMs = hasTarget ? Math.max(0, targetDurationMs - elapsedMs) : null;
 
@@ -316,6 +329,7 @@ function renderSummary(state) {
       Label: <b>${esc(latest.label)}</b><br>
       SF/BW/CR: <b>${esc(latest.sf || "-")} / ${esc(latest.bwKHz || "-")} / ${esc(latest.cr || "-")}</b><br>
       Jarak: <b>${esc(latest.distanceM || "-")} m</b><br>
+      Target Paket: <b>${hasPacketTarget ? `${esc(targetPacketCount)} paket/node` : "-"}</b><br>
       Durasi Target: <b>${hasTarget ? fmtDurationMs(targetDurationMs) : "-"}</b><br>
       Sisa Waktu: <b>${active && hasTarget ? fmtDurationMs(remainingMs) : "-"}</b><br>
       Durasi: <b>${fmtNum((latest.durationMs || 0) / 1000, 2)} s</b><br>
@@ -358,7 +372,7 @@ function renderNodesTable(state) {
 function renderRouteTable(state) {
   const rows = (state.routeEvents || []).slice().reverse();
   if (rows.length === 0) {
-    els.routeTableBody.innerHTML = "<tr><td colspan=\"10\" class=\"small\">Belum ada route diagnostic.</td></tr>";
+    els.routeTableBody.innerHTML = "<tr><td colspan=\"11\" class=\"small\">Belum ada route diagnostic.</td></tr>";
     return;
   }
 
@@ -371,15 +385,19 @@ function renderRouteTable(state) {
       const rp = getRoutePathInfo(state, row.node, rowPath);
       // Gunakan nilai asli dari backend (hopCount)
       const hopDisplay = row.hops ?? "-";
+      const rreqTime = (row.ts && row.discoveryMs) ? fmtTimeMs(row.ts - row.discoveryMs) : "-";
+      const rrepTime = row.ts ? fmtTimeMs(row.ts) : "-";
+
       return `
       <tr>
+        <td>${esc(trial.iterasi || "-")}</td>
         <td>${esc(fmtTime(row.ts))}</td>
         <td>${esc(row.node || "-")}</td>
         <td>${esc(row.target ?? "-")}</td>
         <td>${esc(String(hopDisplay))}</td>
         <td class="route-path">${rp.html}</td>
-        <td>${esc(fmtRouteStampLow32(row.rreqAt))}</td>
-        <td>${esc(fmtRouteStampLow32(row.rrepAt))}</td>
+        <td>${esc(rreqTime)}</td>
+        <td>${esc(rrepTime)}</td>
         <td>${esc(row.discoveryMs ?? "-")}</td>
         <td>${esc(row.retries ?? "-")}</td>
         <td class="${row.success ? "ok" : "fail"}">${row.success ? "SUCCESS" : "FAILED"}</td>
@@ -528,6 +546,9 @@ function renderAllMqttTable(state) {
       // Gunakan nilai asli dari backend (hopCount)
       const hopDisplay = row.hops ?? "-";
       const delayDisplay = row.delayMs ?? row.latencyMs ?? "-";
+      const rreqTime = (row.ts && row.discoveryMs) ? fmtTimeMs(row.ts - row.discoveryMs) : "-";
+      const rrepTime = row.ts ? fmtTimeMs(row.ts) : "-";
+
       return `
       <tr>
         <td>${esc(fmtTime(row.ts))}</td>
@@ -544,8 +565,8 @@ function renderAllMqttTable(state) {
         <td>${esc(String(hopDisplay))}</td>
         <td class="route-path">${esc(routePath)}</td>
         <td>${esc(delayDisplay)}</td>
-        <td>${esc(fmtRouteStampLow32(row.rreqAt))}</td>
-        <td>${esc(fmtRouteStampLow32(row.rrepAt))}</td>
+        <td>${esc(rreqTime)}</td>
+        <td>${esc(rrepTime)}</td>
         <td>${esc(row.discoveryMs ?? "-")}</td>
         <td>${esc(row.retries ?? "-")}</td>
         <td class="${row.success === true ? "ok" : row.success === false ? "fail" : ""}">${esc(successText)}</td>
@@ -654,6 +675,7 @@ function sessionPayloadFromForm() {
     expectedHop: "",
     distanceM: els.form.distanceM.value.trim(),
     durationMinutes: els.form.trialDurationMin.value.trim(),
+    targetPacketCount: String(appConfig?.manualDefaultPacketTarget || 20),
     iterasi: els.form.iterasi.value.trim()
   };
 }

@@ -1,13 +1,3 @@
-/*
- * LoRa Mesh Node Firmware v2.3
- * ESP32-S3 + RFM95 | AODV Routing
- * Project: PERANCANGAN SISTEM KOMUNIKASI DATA IOT BERBASIS LORA MESH AD HOC
- *
- * v2.3: WiFi AP Web Config - ubah SF/BW tanpa re-flash
- *       Boot -> connect ke SSID config node tanpa password
- *       Buka http://192.168.4.1/ -> simpan -> node reboot dengan config baru
- */
-
 #include <SPI.h>
 #include <RH_RF95.h>
 #include "config.h"
@@ -18,8 +8,8 @@
 // ================================================================
 // KONFIGURASI NODE - Ganti untuk setiap unit hardware
 // ================================================================
-#define NODE_ID   1
-#define NODE_NAME "TRK-001"
+#define NODE_ID   2
+#define NODE_NAME "TRK-002"
 
 // ================================================================
 // RUNTIME CONFIG - diisi dari NVRAM atau default config.h
@@ -44,6 +34,13 @@ bool timeSynced             = false;
 
 // Data packet sequence counter (independen dari AODV sequence)
 uint32_t dataSequence = 0;
+
+static bool pendingDataAck = false;
+static LoRaPacket pendingDataPacket;
+static uint32_t pendingDataSeq = 0;
+static uint8_t pendingDataRetries = 0;
+static uint8_t consecutiveAckFailures = 0;
+static unsigned long pendingDataLastTxMs = 0;
 
 // ================================================================
 // DUPLICATE PACKET DETECTION CACHE
@@ -91,6 +88,9 @@ void initSensors();
 void updateGPSData();
 void updateIMUData();
 bool sendSensorData();
+uint32_t getDataAckTimeoutMs();
+uint8_t getDataAckMaxRetries();
+void processDataAckTimeout(unsigned long nowMs);
 void receivePackets();
 void handleReceivedPacket(const LoRaPacket& packet);
 void sendPacketCallback(const LoRaPacket& packet);
@@ -108,9 +108,14 @@ void sendDiagnosticCallback(const DiscoveryDiagPayload& diag) {
     pkt.header.nextHop = aodv.getNextHop(GATEWAY_ID);
     pkt.header.checksum = LoRaPacketHandler::calculateChecksum(pkt);
     sendPacketCallback(pkt);
-    Serial.printf("[DIAG TX] target=%u discovery=%lums hops=%u success=%u\n",
+    
+    // Tunda pengiriman data sensor utama agar tidak bertabrakan dengan paket DIAG
+    extern unsigned long lastLoRaSendTime;
+    lastLoRaSendTime = millis();
+    
+    Serial.printf("[DIAG TX] target=%u discovery=%lums hops=%u retries=%u success=%u\n",
                   diag.targetNodeId, (unsigned long)diag.discoveryMs,
-                  diag.hopCount, diag.success);
+                  diag.hopCount, diag.retryCount, diag.success);
 }
 void setup() {
     Serial.begin(SERIAL_BAUD);
@@ -152,13 +157,20 @@ void setup() {
 }
 
 // ================================================================
-// MAIN LOOP — Interval Tetap 3 Detik + Offset Per Node
+// MAIN LOOP Ã¢â‚¬â€ Interval + Payload Jitter Acak + Offset Per Node
 // ================================================================
-// Setiap node mengirim data setiap 3 detik (DATA_SEND_INTERVAL).
+// Setiap node mengirim data setiap DATA_SEND_INTERVAL + jitter acak.
 // Offset awal = NODE_ID * 500ms untuk menghindari tabrakan saat boot.
 
 unsigned long lastSendTime = 0;
+unsigned long currentSendIntervalMs = DATA_SEND_INTERVAL;
 bool initialOffsetDone = false;
+static const uint16_t PAYLOAD_JITTER_MIN_MS = 100;
+static const uint16_t PAYLOAD_JITTER_MAX_MS = 500;
+
+static unsigned long nextPayloadIntervalMs() {
+    return DATA_SEND_INTERVAL + (unsigned long)random(PAYLOAD_JITTER_MIN_MS, PAYLOAD_JITTER_MAX_MS + 1);
+}
 
 void loop() {
     unsigned long now = millis();
@@ -170,38 +182,46 @@ void loop() {
 
     if (now - lastGPSUpdate > GPS_UPDATE_INTERVAL) { updateGPSData(); lastGPSUpdate = now; }
     if (now - lastIMUUpdate > IMU_UPDATE_INTERVAL)  { updateIMUData(); lastIMUUpdate = now; }
+    receivePackets();
+    processDataAckTimeout(now);
 
     // ============================================================
-    // FIXED INTERVAL SCHEDULING (3 detik + offset NODE_ID * 500ms)
+    // FIXED BASE INTERVAL + RANDOM JITTER (+ offset NODE_ID * 500ms)
     // ============================================================
     if (!initialOffsetDone) {
         // Offset awal agar node tidak kirim bersamaan saat boot
-        lastSendTime = now - DATA_SEND_INTERVAL + (NODE_ID * 500UL);
+        currentSendIntervalMs = nextPayloadIntervalMs();
+        lastSendTime = now - currentSendIntervalMs + (NODE_ID * 500UL);
         initialOffsetDone = true;
+        Serial.printf("[TX] Payload jitter aktif: +%u..+%u ms\n",
+                      PAYLOAD_JITTER_MIN_MS, PAYLOAD_JITTER_MAX_MS);
     }
 
-    if (now - lastSendTime >= DATA_SEND_INTERVAL) {
+    if (now - lastSendTime >= currentSendIntervalMs) {
         bool ok = sendSensorData();
+        
+        // SELALU update waktu terakhir pengiriman, gagal ataupun sukses.
+        // Ini mencegah Node melakukan "spam" (menembak data tanpa jeda) saat antrean ACK penuh!
+        lastSendTime = now;
+        currentSendIntervalMs = nextPayloadIntervalMs();
+        
         if (ok) {
-            lastSendTime = now;
-            Serial.printf("[TX] Sent OK | SF=%d BW=%dkHz | interval=%dms\n",
-                          runtimeCfg.sf, runtimeCfg.bwKHz, DATA_SEND_INTERVAL);
+            Serial.printf("[TX] Sent OK | SF=%d BW=%dkHz | interval=%lums\n",
+                          runtimeCfg.sf, runtimeCfg.bwKHz, currentSendIntervalMs);
         } else {
-            // Retry di iterasi berikutnya (tidak reset lastSendTime)
+            Serial.println("[TX] Skipped (Busy/No Route/ACK Pending)");
         }
     }
-
-    receivePackets();
-
     // Print route + sync stats tiap 60 detik
     static unsigned long lastPrint = 0;
     if (now - lastPrint > 60000) {
         Serial.printf("[STATUS] Route OK=%d GAGAL=%d | Sync=%s EpochLow32=%lu\n",
                       aodv.routeDiscoverySuccess, aodv.routeDiscoveryFail,
                       timeSynced?"YA":"BELUM", (unsigned long)epochOffsetMsLow32);
-        Serial.printf("[CONFIG] SF=%d BW=%dkHz Interval=%dms Offset=%dms\n",
+        Serial.printf("[CONFIG] SF=%d BW=%dkHz IntervalBase=%dms Offset=%dms Jitter=%u-%ums\n",
                       runtimeCfg.sf, runtimeCfg.bwKHz,
-                      DATA_SEND_INTERVAL, NODE_ID * 500);
+                      DATA_SEND_INTERVAL, NODE_ID * 500,
+                      PAYLOAD_JITTER_MIN_MS, PAYLOAD_JITTER_MAX_MS);
         lastPrint = now;
     }
 
@@ -244,6 +264,7 @@ void initLoRa() {
     rf95.setCodingRate4(runtimeCfg.cr);
     rf95.setTxPower(pwr, runtimeCfg.useRFO);
     rf95.setPreambleLength(LORA_PREAMBLE_LENGTH);
+    rf95.setCADTimeout(LORA_CAD_TIMEOUT_MS);
 
     Serial.printf("LoRa OK ??? SF=%d BW=%.0fkHz CR=4/%d Pwr=%ddBm (%s)\n",
                   runtimeCfg.sf, bwHz/1000.0, runtimeCfg.cr, pwr,
@@ -285,6 +306,10 @@ void updateIMUData() {
 // SEND SENSOR DATA
 // ================================================================
 bool sendSensorData() {
+    if (DATA_ACK_ENABLE && pendingDataAck) {
+        return false;
+    }
+
     sensorData.batteryVoltage = 3.7f + (random(0,100)/100.0f);
     sensorData.signalStrength = rf95.lastRssi();
     sensorData.txTimestamp    = timeSynced
@@ -310,15 +335,83 @@ bool sendSensorData() {
         sensorData.routeHops = lastDiscoveryHops;
     }
 
+    uint32_t nextSeq = dataSequence + 1;
     LoRaPacket pkt = packetHandler.createDataPacket(
-        NODE_ID, GATEWAY_ID, sensorData, ++dataSequence);
+        NODE_ID, GATEWAY_ID, sensorData, nextSeq);
     pkt.header.nextHop  = aodv.getNextHop(GATEWAY_ID);
     pkt.header.checksum = LoRaPacketHandler::calculateChecksum(pkt);
 
     Serial.printf("[TX] Data-> SF=%d BW=%dkHz Sync=%s\n",
                   runtimeCfg.sf, runtimeCfg.bwKHz, timeSynced?"YA":"NO");
     sendPacketCallback(pkt);
+    dataSequence = nextSeq;
+    if (DATA_ACK_ENABLE) {
+        pendingDataAck = true;
+        pendingDataPacket = pkt;
+        pendingDataSeq = nextSeq;
+        pendingDataRetries = 0;
+        pendingDataLastTxMs = millis();
+    }
     return true;
+}
+
+uint32_t getDataAckTimeoutMs() {
+    uint32_t baseMs;
+    switch (runtimeCfg.sf) {
+        case 7:  baseMs = DATA_ACK_TIMEOUT_SF7_MS; break;
+        case 9:  baseMs = DATA_ACK_TIMEOUT_SF9_MS; break;
+        case 12: baseMs = DATA_ACK_TIMEOUT_SF12_MS; break;
+        default: baseMs = DATA_ACK_TIMEOUT_MS; break;
+    }
+    uint8_t hops = aodv.getRouteHopCount(GATEWAY_ID);
+    if (hops == 0) hops = 1;
+    return (baseMs * hops) + ((hops - 1) * 500);
+}
+
+uint8_t getDataAckMaxRetries() {
+    switch (runtimeCfg.sf) {
+        case 7:  return DATA_ACK_MAX_RETRIES_SF7;
+        case 9:  return DATA_ACK_MAX_RETRIES_SF9;
+        case 12: return DATA_ACK_MAX_RETRIES_SF12;
+        default: return DATA_ACK_MAX_RETRIES;
+    }
+}
+
+void processDataAckTimeout(unsigned long nowMs) {
+    if (!DATA_ACK_ENABLE || !pendingDataAck) {
+        return;
+    }
+    const uint32_t ackTimeoutMs = getDataAckTimeoutMs();
+    const uint8_t ackMaxRetries = getDataAckMaxRetries();
+
+    if ((nowMs - pendingDataLastTxMs) < ackTimeoutMs) {
+        return;
+    }
+    if (pendingDataRetries >= ackMaxRetries) {
+        Serial.printf("[ACK] timeout seq=%lu retries=%u, drop\n",
+                      (unsigned long)pendingDataSeq,
+                      (unsigned)pendingDataRetries);
+        pendingDataAck = false;
+        
+        consecutiveAckFailures++;
+        if (consecutiveAckFailures >= 5) {
+            Serial.println("[AODV] Link terputus (3x ACK Timeout berturut-turut)! Menghapus rute lama...");
+            aodv.invalidateRoute(GATEWAY_ID);
+            consecutiveAckFailures = 0;
+        } else {
+            Serial.printf("[AODV] Paket gagal, tapi rute dipertahankan (%d/3 kegagalan)\n", consecutiveAckFailures);
+        }
+        
+        return;
+    }
+
+    pendingDataRetries++;
+    pendingDataLastTxMs = nowMs;
+    sendPacketCallback(pendingDataPacket);
+    Serial.printf("[ACK] retry %u/%u seq=%lu\n",
+                  (unsigned)pendingDataRetries,
+                  (unsigned)ackMaxRetries,
+                  (unsigned long)pendingDataSeq);
 }
 
 // ================================================================
@@ -336,17 +429,53 @@ void receivePackets() {
 void handleReceivedPacket(const LoRaPacket& packet) {
     if (packet.header.sourceID == NODE_ID) return;
 
-    // Duplicate detection untuk data packets
+    // --- ARTIFICIAL TOPOLOGY FILTER ---
+    // Jika node ini bertindak sebagai TRK-003 (Lantai 1) dan paket datang langsung dari Gateway (Lantai 3), abaikan
+    // agar Node 3 (Lantai 1) tidak menganggap Gateway berjarak 1-Hop!
+    if (NODE_ID == 3 && packet.header.sourceID == GATEWAY_ID && packet.header.hopCount == 0) {
+        return;
+    }
+
     uint8_t ptype = packet.header.packetType;
-    if (ptype == PKT_TYPE_DATA || ptype == PKT_TYPE_FATIGUE_IMU ||
-        ptype == PKT_TYPE_SAFETY_CONDITION || ptype == PKT_TYPE_VEHICLE_TELEMETRY ||
-        ptype == PKT_TYPE_DIAGNOSTIC) {
+    const bool isForwardPayload =
+        (ptype == PKT_TYPE_DATA ||
+         ptype == PKT_TYPE_FATIGUE_IMU ||
+         ptype == PKT_TYPE_FATIGUE_STATUS ||
+         ptype == PKT_TYPE_SAFETY_CONDITION ||
+         ptype == PKT_TYPE_VEHICLE_TELEMETRY ||
+         ptype == PKT_TYPE_DIAGNOSTIC ||
+         ptype == PKT_TYPE_ACK);
+
+    // Duplicate detection hanya untuk paket yang memang ditujukan ke node ini.
+    // Paket transit boleh lewat agar retry seq yang sama tidak ter-drop di relay.
+    if (packet.header.destinationID == NODE_ID &&
+        (ptype == PKT_TYPE_DATA || ptype == PKT_TYPE_FATIGUE_IMU ||
+         ptype == PKT_TYPE_SAFETY_CONDITION || ptype == PKT_TYPE_VEHICLE_TELEMETRY ||
+         ptype == PKT_TYPE_DIAGNOSTIC || ptype == PKT_TYPE_ACK)) {
         if (isDuplicate(packet.header.sourceID, packet.header.sequenceNum, ptype)) {
             Serial.printf("[DUP] Dropped src=%u seq=%u type=0x%02X\n",
                           packet.header.sourceID, packet.header.sequenceNum, ptype);
             return;
         }
         addToDupCache(packet.header.sourceID, packet.header.sequenceNum, ptype);
+    }
+
+    if (ptype == PKT_TYPE_ACK &&
+        packet.header.destinationID == NODE_ID &&
+        packet.header.payloadLength == sizeof(AckPayload)) {
+        AckPayload ack = {};
+        memcpy(&ack, packet.payload, sizeof(ack));
+        if (DATA_ACK_ENABLE &&
+            pendingDataAck &&
+            ack.ackedPacketType == PKT_TYPE_DATA &&
+            ack.ackedSequence == pendingDataSeq) {
+            pendingDataAck = false;
+            consecutiveAckFailures = 0;
+            Serial.printf("[ACK] received seq=%lu retries=%u\n",
+                          (unsigned long)pendingDataSeq,
+                          (unsigned)pendingDataRetries);
+        }
+        return;
     }
 
     switch (ptype) {
@@ -356,9 +485,12 @@ void handleReceivedPacket(const LoRaPacket& packet) {
         case PKT_TYPE_SAFETY_CONDITION:
         case PKT_TYPE_VEHICLE_TELEMETRY:
         case PKT_TYPE_DIAGNOSTIC:
-            if (packet.header.nextHop == NODE_ID
-                && aodv.hasRouteTo(packet.header.destinationID)
-                && packet.header.hopCount < MAX_HOP_COUNT) {
+        case PKT_TYPE_ACK:
+            if (isForwardPayload &&
+                packet.header.nextHop == NODE_ID &&
+                packet.header.destinationID != NODE_ID &&
+                aodv.hasRouteTo(packet.header.destinationID) &&
+                packet.header.hopCount < MAX_HOP_COUNT) {
                 LoRaPacket fwd = packet;
                 fwd.header.hopCount++;
                 // Append NODE_ID ke route path agar Gateway bisa melihat jalur yang dilalui
@@ -393,7 +525,7 @@ void handleReceivedPacket(const LoRaPacket& packet) {
             if (packet.header.payloadLength == sizeof(StartTestPayload)) {
                 StartTestPayload st;
                 memcpy(&st, packet.payload, sizeof(StartTestPayload));
-                Serial.printf("[START_TEST] SF=%u BW=%lukHz — Reboot dalam 2 detik...\n",
+                Serial.printf("[START_TEST] SF=%u BW=%lukHz Ã¢â‚¬â€ Reboot dalam 2 detik...\n",
                               st.sf, (unsigned long)st.bwKHz);
                 // Simpan ke NVRAM via WebConfig, lalu reboot
                 WebConfig::saveTestConfig(st.sf, st.bwKHz);
@@ -407,7 +539,12 @@ void handleReceivedPacket(const LoRaPacket& packet) {
 void sendPacketCallback(const LoRaPacket& packet) {
     uint8_t buf[RH_RF95_MAX_MESSAGE_LEN];
     int len = packetHandler.serializePacket(packet, buf, sizeof(buf));
-    delay(random(30, 150));
+    if (packet.header.packetType == PKT_TYPE_ACK) {
+        delay(random(5, 20));
+    } else {
+        delay(random(30, 150));
+    }
     if (len > 0) { rf95.send(buf, len); rf95.waitPacketSent(); rf95.setModeRx(); }
 }
+
 
