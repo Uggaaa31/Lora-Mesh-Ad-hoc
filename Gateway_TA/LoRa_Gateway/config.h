@@ -24,7 +24,7 @@ struct WiFiProfile {
 // Ganti SF dan BW untuk pengujian skenario 4 (Pengaruh Parameter LoRa)
 // ================================================================
 #define LORA_FREQUENCY         921.0   // MHz - Sesuai regulasi Indonesia (Kominfo)
-#define LORA_BANDWIDTH         125E3   // 125 kHz (ganti ke 250E3 untuk BW=250 kHz)
+#define LORA_BANDWIDTH         250E3   // 125 kHz (ganti ke 250E3 untuk BW=250 kHz)
 #define LORA_SPREADING_FACTOR  9       // SF7 (ganti 7-12 untuk skenario 4)
 #define LORA_CODING_RATE       5       // 4/5 (tetap untuk semua skenario)
 #define LORA_TX_POWER          20      // dBm (RFO path, max 15)
@@ -62,7 +62,7 @@ struct WiFiProfile {
 // ================================================================
 #define ROUTE_TIMEOUT          60000  // 60 detik - route expiration time
 #define RREQ_TIMEOUT           5000   // 5 detik - timeout untuk RREQ retry
-#define RREQ_RETRIES           3      // Jumlah retry untuk RREQ
+#define RREQ_RETRIES           5      // Jumlah retry untuk RREQ
 #define HELLO_INTERVAL         30000  // 30 detik - periodic hello message (dikurangi untuk anti-kolisi)
 #define MAX_HOP_COUNT          10     // Maximum hop count
 #define ROUTE_CLEANUP_INTERVAL 60000  // 60 detik - garbage collection interval

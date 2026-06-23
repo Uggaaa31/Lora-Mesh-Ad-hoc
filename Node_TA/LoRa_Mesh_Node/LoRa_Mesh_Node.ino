@@ -281,6 +281,9 @@ void initSensors() {
     gpsAltOffset = NODE_ID * 5.0f;
     sensorData.batteryVoltage = 3.7f + (random(0, 100) / 100.0f);
     sensorData.txTimestamp    = 0;
+    sensorData.padding[0] = 'E';
+    sensorData.padding[1] = 'N';
+    sensorData.padding[2] = 'D';
     updateGPSData(); updateIMUData();
     Serial.println("Sensors initialized (dummy mode).");
 }
@@ -513,12 +516,21 @@ void handleReceivedPacket(const LoRaPacket& packet) {
         case PKT_TYPE_TIMESYNC:
             if (packet.header.payloadLength == sizeof(TimeSyncPayload)) {
                 TimeSyncPayload ts;
-                memcpy(&ts, packet.payload, sizeof(TimeSyncPayload));
+                memcpy(&ts, packet.payload, sizeof(ts));
                 uint32_t epochMs = (uint32_t)((uint64_t)ts.epochSeconds * 1000ULL + ts.millisPart);
-                epochOffsetMsLow32 = epochMs - (uint32_t)millis();
-                timeSynced = true;
-                Serial.printf("[TIMESYNC] OK EpochLow32=%lu\n",
-                              (unsigned long)epochOffsetMsLow32);
+                
+                static uint32_t lastSyncEpoch = 0;
+                // Flood rebroadcast mechanism: hanya forward jika sync baru
+                if (epochMs > lastSyncEpoch + 1000) {
+                    lastSyncEpoch = epochMs;
+                    epochOffsetMsLow32 = epochMs - (uint32_t)millis();
+                    timeSynced = true;
+                    Serial.printf("[TIMESYNC] Synced! EpochLow32=%lu\n", (unsigned long)epochOffsetMsLow32);
+                    
+                    // Rebroadcast agar node multi-hop juga mendapat sinkronisasi jam
+                    delay(random(20, 100)); // Jeda anti-kolisi
+                    sendPacketCallback(packet);
+                }
             }
             break;
         case PKT_TYPE_START_TEST:

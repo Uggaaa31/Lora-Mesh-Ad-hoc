@@ -409,6 +409,7 @@ bool sendVehicleTelemetry(unsigned long nowMs) {
     }
 
     VehicleTelemetryPayload payload = {};
+    memcpy(payload.padding, "DUMMY_TELEMETRY_DATA_OK", 23);
     payload.latitude = lat;
     payload.longitude = lon;
     payload.headingDeg = headingDeg;
@@ -651,10 +652,19 @@ void handleReceivedPacket(const LoRaPacket& packet) {
                 TimeSyncPayload ts;
                 memcpy(&ts, packet.payload, sizeof(ts));
                 uint32_t epochMs = (uint32_t)((uint64_t)ts.epochSeconds * 1000ULL + ts.millisPart);
-                epochOffsetMsLow32 = epochMs - (uint32_t)millis();
-                timeSynced = true;
-                Serial.printf("[TIMESYNC] EpochLow32=%lu\n",
-                              (unsigned long)epochOffsetMsLow32);
+                
+                static uint32_t lastSyncEpoch = 0;
+                // Flood rebroadcast mechanism: hanya forward jika sync baru
+                if (epochMs > lastSyncEpoch + 1000) {
+                    lastSyncEpoch = epochMs;
+                    epochOffsetMsLow32 = epochMs - (uint32_t)millis();
+                    timeSynced = true;
+                    Serial.printf("[TIMESYNC] Synced! EpochLow32=%lu\n", (unsigned long)epochOffsetMsLow32);
+                    
+                    // Rebroadcast agar node multi-hop juga mendapat sinkronisasi jam
+                    delay(random(20, 100)); // Jeda anti-kolisi
+                    sendPacketCallback(packet);
+                }
             }
             break;
 

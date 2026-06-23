@@ -372,6 +372,7 @@ void sendLoRaImuData() {
         : (uint32_t)millis();
 
     ImuFatiguePayload imu = {};
+    memcpy(imu.padding, "FATIGUE_OK", 10);
     imu.packetType = PKT_TYPE_FATIGUE_IMU;
     imu.nodeId = NODE_ID;
     imu.ts = nowEpoch;
@@ -537,12 +538,24 @@ void loop() {
                 }
                 else if (pkt.header.sourceID == NODE_ID) { /* skip own */ }
                 else if (pkt.header.packetType == PKT_TYPE_TIMESYNC) {
-                    TimeSyncPayload ts; memcpy(&ts, pkt.payload, sizeof(TimeSyncPayload));
-                    struct timeval tv;
-                    tv.tv_sec = ts.epochSeconds;
-                    tv.tv_usec = ts.millisPart * 1000;
-                    settimeofday(&tv, NULL);
+            if (pkt.header.payloadLength == sizeof(TimeSyncPayload)) {
+                TimeSyncPayload ts;
+                memcpy(&ts, pkt.payload, sizeof(ts));
+                uint32_t epochMs = (uint32_t)((uint64_t)ts.epochSeconds * 1000ULL + ts.millisPart);
+                
+                static uint32_t lastSyncEpoch = 0;
+                // Flood rebroadcast mechanism: hanya forward jika sync baru
+                if (epochMs > lastSyncEpoch + 1000) {
+                    lastSyncEpoch = epochMs;
+                    epochOffsetMsLow32 = epochMs - (uint32_t)millis();
                     timeSynced = true;
+                    Serial.printf("[TIMESYNC] Synced! EpochLow32=%lu\n", (unsigned long)epochOffsetMsLow32);
+                    
+                    // Rebroadcast agar node multi-hop juga mendapat sinkronisasi jam
+                    delay(random(20, 100)); // Jeda anti-kolisi
+                    sendPacketCallback(pkt);
+                }
+            }
                 } else if (pkt.header.packetType == PKT_TYPE_FATIGUE_STATUS && pkt.header.destinationID == NODE_ID) {
                     FatigueStatusPayload stat; memcpy(&stat, pkt.payload, sizeof(FatigueStatusPayload));
                     if (stat.status == 1) setAlarmState(ALARM_LELAH);

@@ -49,7 +49,7 @@
 // ================================================================
 #define ROUTE_TIMEOUT          180000 // 3 menit - route expiration time (diperpanjang agar tidak sering re-discovery)
 #define RREQ_TIMEOUT           5000   // 5 detik - timeout untuk RREQ retry
-#define RREQ_RETRIES           3      // Jumlah retry untuk RREQ
+#define RREQ_RETRIES           5      // Jumlah retry untuk RREQ
 #define HELLO_INTERVAL         45000  // 45 detik - periodic hello message (diperpanjang untuk kurangi beban udara)
 #define MAX_HOP_COUNT          10     // Maximum hop count
 #define ROUTE_CLEANUP_INTERVAL 90000  // 90 detik - garbage collection interval

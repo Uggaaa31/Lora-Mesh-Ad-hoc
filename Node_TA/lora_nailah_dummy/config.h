@@ -12,7 +12,7 @@
 // LORA CONFIGURATION
 // ================================================================
 #define LORA_FREQUENCY         921.0   // MHz - Sesuai regulasi Indonesia (Kominfo)
-#define LORA_BANDWIDTH         125E3   // 125 kHz (ganti ke 250E3 untuk BW=250 kHz)
+#define LORA_BANDWIDTH         250E3   // 125 kHz (ganti ke 250E3 untuk BW=250 kHz)
 #define LORA_SPREADING_FACTOR  9       // SF7 (ganti 7-12 untuk skenario 4)
 #define LORA_CODING_RATE       5       // 4/5 (tetap untuk semua skenario)
 #define LORA_TX_POWER          20      // dBm (PA_BOOST)
@@ -49,7 +49,7 @@
 // ================================================================
 #define ROUTE_TIMEOUT          180000 // 3 menit - route expiration time (diperpanjang agar tidak sering re-discovery)
 #define RREQ_TIMEOUT           5000   // 5 detik - timeout untuk RREQ retry
-#define RREQ_RETRIES           3      // Jumlah retry untuk RREQ
+#define RREQ_RETRIES           5      // Jumlah retry untuk RREQ
 #define HELLO_INTERVAL         45000  // 45 detik - periodic hello message (diperpanjang untuk kurangi beban udara)
 #define MAX_HOP_COUNT          10     // Maximum hop count
 #define ROUTE_CLEANUP_INTERVAL 90000  // 90 detik - garbage collection interval
@@ -78,7 +78,7 @@
 #define FLAG_OVERSPEED      0x20
 
 // ================================================================
-#define DATA_SEND_INTERVAL  3000     // 3 detik - interval kirim sensor (sesuai skripsi)
+#define DATA_SEND_INTERVAL  15000     // 15 detik - interval kirim sensor (sesuai skripsi)
 #define GPS_UPDATE_INTERVAL 100      // 100 ms - update GPS dummy data
 #define IMU_UPDATE_INTERVAL 100      // 100 ms - update IMU dummy data
 #define DATA_ACK_ENABLE     true     // true = aktifkan ACK data + retry terbatas

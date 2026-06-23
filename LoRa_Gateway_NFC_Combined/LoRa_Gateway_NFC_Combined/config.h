@@ -62,7 +62,7 @@ struct WiFiProfile {
 // ================================================================
 #define ROUTE_TIMEOUT          60000  // 60 detik - route expiration time
 #define RREQ_TIMEOUT           5000   // 5 detik - timeout untuk RREQ retry
-#define RREQ_RETRIES           3      // Jumlah retry untuk RREQ
+#define RREQ_RETRIES           5     // Jumlah retry untuk RREQ
 #define HELLO_INTERVAL         30000  // 30 detik - periodic hello message (dikurangi untuk anti-kolisi)
 #define MAX_HOP_COUNT          10     // Maximum hop count
 #define ROUTE_CLEANUP_INTERVAL 60000  // 60 detik - garbage collection interval

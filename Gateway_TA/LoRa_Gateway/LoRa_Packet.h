@@ -39,8 +39,8 @@ struct PacketHeader {
 // SENSOR SUB-STRUCTS
 // ================================================================
 struct GPSData {
-    float latitude;
-    float longitude;
+    double latitude;
+    double longitude;
     float altitude;
     uint32_t timestamp;
 } __attribute__((packed));
@@ -64,7 +64,7 @@ struct SensorDataPayload {
     uint32_t txTimestamp;      // Epoch ms (low 32-bit) saat node kirim â€” untuk hitung latensi
     uint32_t routeDiscMs;      // Waktu discovery terakhir (ms)
     uint8_t  routeHops;        // Jumlah hop terakhir
-    uint8_t  padding[11];      // Tambahan padding agar tepat 70 Byte
+    uint8_t  padding[3];       // Tambahan padding agar tepat 70 Byte
 } __attribute__((packed));
 
 static_assert(sizeof(SensorDataPayload) <= MAX_PAYLOAD_SIZE,
