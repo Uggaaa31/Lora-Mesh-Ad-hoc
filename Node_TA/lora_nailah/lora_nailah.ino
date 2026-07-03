@@ -221,7 +221,7 @@ void setup() {
 // ================================================================
 // MAIN LOOP Ã¢â‚¬â€ Interval + Payload Jitter Acak + Offset Per Node
 // ================================================================
-unsigned long lastSendTime = 0;
+unsigned long lastLoRaSendTime = 0;
 unsigned long currentSendIntervalMs = DATA_SEND_INTERVAL;
 bool initialOffsetDone = false;
 static const uint16_t PAYLOAD_JITTER_MIN_MS = 100;
@@ -243,16 +243,16 @@ void loop() {
     // FIXED BASE INTERVAL + RANDOM JITTER (+ offset NODE_ID * 500ms)
     if (!initialOffsetDone) {
         currentSendIntervalMs = nextPayloadIntervalMs();
-        lastSendTime = nowMs - currentSendIntervalMs + (NODE_ID * 500UL);
+        lastLoRaSendTime = nowMs - currentSendIntervalMs + (NODE_ID * 500UL);
         initialOffsetDone = true;
         Serial.printf("[TX] Payload jitter aktif: +%u..+%u ms\n",
                       PAYLOAD_JITTER_MIN_MS, PAYLOAD_JITTER_MAX_MS);
     }
 
-    if (nowMs - lastSendTime >= currentSendIntervalMs) {
+    if (nowMs - lastLoRaSendTime >= currentSendIntervalMs) {
         bool ok = sendVehicleTelemetry(nowMs);
         if (ok) {
-            lastSendTime = nowMs;
+            lastLoRaSendTime = nowMs;
             currentSendIntervalMs = nextPayloadIntervalMs();
             Serial.printf("[TX] Sent OK | SF=%d BW=%dkHz | interval=%lums\n",
                           runtimeCfg.sf, runtimeCfg.bwKHz, currentSendIntervalMs);
@@ -584,7 +584,7 @@ uint32_t getDataAckTimeoutMs() {
     }
     uint8_t hops = aodv.getRouteHopCount(GATEWAY_ID);
     if (hops == 0) hops = 1;
-    return (baseMs * hops) + ((hops - 1) * 500);
+    return (baseMs * hops) + ((hops - 1) * 1000);
 }
 
 uint8_t getDataAckMaxRetries() {
@@ -614,11 +614,11 @@ void processDataAckTimeout(unsigned long nowMs) {
         
         consecutiveAckFailures++;
         if (consecutiveAckFailures >= 5) {
-            Serial.println("[AODV] Link terputus (3x ACK Timeout berturut-turut)! Menghapus rute lama...");
+            Serial.println("[AODV] Link terputus (5x ACK Timeout berturut-turut)! Menghapus rute lama...");
             aodv.invalidateRoute(GATEWAY_ID);
             consecutiveAckFailures = 0;
         } else {
-            Serial.printf("[AODV] Paket gagal, tapi rute dipertahankan (%d/3 kegagalan)\n", consecutiveAckFailures);
+            Serial.printf("[AODV] Paket gagal, tapi rute dipertahankan (%d/5 kegagalan)\n", consecutiveAckFailures);
         }
         
         return;
@@ -782,7 +782,7 @@ void sendPacketCallback(const LoRaPacket& packet) {
     if (packet.header.packetType == PKT_TYPE_ACK) {
         delay(random(5, 20));
     } else {
-        delay(random(30, 150));
+        delay(random(20, 80));
     }
     if (len > 0) {
         rf95.send(buf, len);
@@ -790,4 +790,5 @@ void sendPacketCallback(const LoRaPacket& packet) {
         rf95.setModeRx();
     }
 }
+
 

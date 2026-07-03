@@ -922,7 +922,7 @@ void handleReceivedPacket(const LoRaPacket& packet) {
 
                     // Publish to MQTT
                     if (mqttConnected && mqtt_client) {
-                        StaticJsonDocument<384> doc;
+                        StaticJsonDocument<512> doc;
                         doc["node_asal"] = diag.originNodeId;
                         doc["node_name"] = getNodeName(diag.originNodeId);
                         doc["target_rute"] = diag.targetNodeId;
@@ -934,7 +934,15 @@ void handleReceivedPacket(const LoRaPacket& packet) {
                         doc["success"] = diag.success;
                         doc["rssi"] = rssi;
 
-                        char buf[384];
+                        JsonArray rp = doc.createNestedArray("route_path");
+                        uint8_t rpLen = packet.header.routePathLen;
+                        if (rpLen > MAX_ROUTE_PATH) rpLen = MAX_ROUTE_PATH;
+                        for (uint8_t i = 0; i < rpLen; i++) {
+                            rp.add(getNodeName(packet.header.routePath[i]));
+                        }
+                        rp.add("GATEWAY");
+
+                        char buf[512];
                         serializeJson(doc, buf, sizeof(buf));
                         esp_mqtt_client_publish(mqtt_client, MQTT_TOPIC_DIAGNOSTIC, buf, 0, 1, 0);
                         Serial.printf("[MQTT] Published diagnostic -> %s\n", MQTT_TOPIC_DIAGNOSTIC);
@@ -955,7 +963,7 @@ void sendPacketCallback(const LoRaPacket& packet) {
     if (packet.header.packetType == PKT_TYPE_ACK) {
         delay(random(5, 20));
     } else {
-        delay(random(30, 150));
+        delay(random(20, 80));
     }
     if (len > 0) {
         rf95.send(buf, len);

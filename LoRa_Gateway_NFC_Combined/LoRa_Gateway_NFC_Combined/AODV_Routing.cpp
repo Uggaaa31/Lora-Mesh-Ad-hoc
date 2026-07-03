@@ -93,7 +93,7 @@ uint8_t AODVRouting::getNextHop(uint8_t destination) {
         }
         routingTable[idx].status = ROUTE_INVALID;
     }
-    return 0;  // No route
+    return BROADCAST_ADDR;  // No route
 }
 
 uint8_t AODVRouting::getRouteHopCount(uint8_t destination) {
@@ -525,7 +525,7 @@ void AODVRouting::handleRREP(const LoRaPacket& packet) {
     // Forward RREP to originator
     if (hasRouteTo(rrep.originatorID)) {
         uint8_t nextHop = getNextHop(rrep.originatorID);
-        if (nextHop == 0 || nextHop == packet.header.sourceID) {
+        if (nextHop == BROADCAST_ADDR || nextHop == packet.header.sourceID) {
             Serial.println("Drop RREP to prevent loop");
             return;
         }
@@ -610,7 +610,7 @@ void AODVRouting::sendRREP(uint8_t originatorID, uint8_t destinationID,
     rrep.lifetime = ROUTE_TIMEOUT;
     
     uint8_t nextHop = getNextHop(originatorID);
-    if (nextHop == 0) {
+    if (nextHop == BROADCAST_ADDR) {
         Serial.println("Cannot send RREP: no reverse route to originator");
         return;
     }

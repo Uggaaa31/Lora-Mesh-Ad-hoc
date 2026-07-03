@@ -12,10 +12,10 @@
 // LORA CONFIGURATION
 // ================================================================
 #define LORA_FREQUENCY         921.0   // MHz - Sesuai regulasi Indonesia (Kominfo)
-#define LORA_BANDWIDTH         125E3   // 125 kHz (ganti ke 250E3 untuk BW=250 kHz)
-#define LORA_SPREADING_FACTOR  9       // SF7 (ganti 7-12 untuk skenario 4)
+#define LORA_BANDWIDTH         125E3   // 125 kHz
+#define LORA_SPREADING_FACTOR  9       // SF9
 #define LORA_CODING_RATE       5       // 4/5 (tetap untuk semua skenario)
-#define LORA_TX_POWER          20      // dBm (PA_BOOST)
+#define LORA_TX_POWER          10      // dBm (PA_BOOST)
 #define LORA_USE_RFO           false   // false = PA_BOOST, true = RFO
 #define LORA_PREAMBLE_LENGTH   8       // default
 #define LORA_CAD_TIMEOUT_MS    800     // tunggu kanal clear sebelum TX
@@ -47,7 +47,7 @@
 // AODV PROTOCOL PARAMETERS
 // ================================================================
 #define ROUTE_TIMEOUT          180000 // 3 menit - route expiration time (diperpanjang agar tidak sering re-discovery)
-#define RREQ_TIMEOUT           5000   // 5 detik - timeout untuk RREQ retry
+#define RREQ_TIMEOUT           2500   // 2.5 detik - timeout untuk RREQ retry (dioptimasi untuk mesh)
 #define RREQ_RETRIES           5      // Jumlah retry untuk RREQ
 #define HELLO_INTERVAL         45000  // 45 detik - periodic hello message (diperpanjang untuk kurangi beban udara)
 #define MAX_HOP_COUNT          10     // Maximum hop count
@@ -78,7 +78,7 @@
 
 // Tuning ACK khusus SF untuk trade-off delay vs PDR
 #define DATA_ACK_TIMEOUT_SF7_MS   1000
-#define DATA_ACK_TIMEOUT_SF9_MS   1500
+#define DATA_ACK_TIMEOUT_SF9_MS   1000
 #define DATA_ACK_TIMEOUT_SF12_MS  7000
 
 #define DATA_ACK_MAX_RETRIES_SF7  1
@@ -113,8 +113,8 @@
 #define GPS_ALT_RANGE       50.0     // Variance range
 
 // IMU Dummy - Accelerometer & Gyroscope ranges
-#define IMU_ACCEL_RANGE     2.0      // ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â±2g
-#define IMU_GYRO_RANGE      250.0    // ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â±250 deg/s
+#define IMU_ACCEL_RANGE     2.0
+#define IMU_GYRO_RANGE      250.0
 
 #endif // CONFIG_H
 

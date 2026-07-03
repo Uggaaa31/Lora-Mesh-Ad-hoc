@@ -16,7 +16,7 @@ replacement = r'''uint32_t getDataAckTimeoutMs() {
     }
     uint8_t hops = aodv.getRouteHopCount(GATEWAY_ID);
     if (hops == 0) hops = 1;
-    return (baseMs * hops) + ((hops - 1) * 500);
+    return (baseMs * hops) + ((hops - 1) * 1000);
 }'''
 
 for root, dirs, files in os.walk(node_dir):

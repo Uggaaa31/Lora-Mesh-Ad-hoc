@@ -277,7 +277,7 @@ void sendPacketCallback(const LoRaPacket& packet) {
     if (packet.header.packetType == PKT_TYPE_ACK) {
         delay(random(5, 20));
     } else {
-        delay(random(30, 150));
+        delay(random(20, 80));
     }
     if (len > 0) {
         rf95.send(buf, len);
@@ -315,7 +315,7 @@ uint32_t getDataAckTimeoutMs() {
     }
     uint8_t hops = aodv.getRouteHopCount(GATEWAY_ID);
     if (hops == 0) hops = 1;
-    return (baseMs * hops) + ((hops - 1) * 500);
+    return (baseMs * hops) + ((hops - 1) * 1000);
 }
 
 uint8_t getDataAckMaxRetries() {
@@ -609,3 +609,4 @@ void loop() {
     
     delay(5);
 }
+

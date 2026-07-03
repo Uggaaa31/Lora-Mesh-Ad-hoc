@@ -24,12 +24,12 @@ for root, dirs, files in os.walk(node_dir):
         aodv.invalidateRoute(GATEWAY_ID);'''
             
             new_timeout = '''        consecutiveAckFailures++;
-        if (consecutiveAckFailures >= 5) {
+        if (consecutiveAckFailures >= 10) {
             Serial.println("[AODV] Link terputus (3x ACK Timeout berturut-turut)! Menghapus rute lama...");
             aodv.invalidateRoute(GATEWAY_ID);
             consecutiveAckFailures = 0;
         } else {
-            Serial.printf("[AODV] Paket gagal, tapi rute dipertahankan (%d/3 kegagalan)\\n", consecutiveAckFailures);
+            Serial.printf("[AODV] Paket gagal, tapi rute dipertahankan (%d/10 kegagalan)\\n", consecutiveAckFailures);
         }'''
             
             if old_timeout in content:

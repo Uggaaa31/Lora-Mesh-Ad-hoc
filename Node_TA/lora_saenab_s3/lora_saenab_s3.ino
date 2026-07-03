@@ -267,7 +267,7 @@ void sendPacketCallback(const LoRaPacket& packet) {
     if (packet.header.packetType == PKT_TYPE_ACK) {
         delay(random(5, 20));
     } else {
-        delay(random(30, 150));
+        delay(random(20, 80));
     }
     if (len > 0) {
         rf95.send(buf, len);
@@ -480,3 +480,4 @@ void loop() {
     
     delay(5);
 }
+

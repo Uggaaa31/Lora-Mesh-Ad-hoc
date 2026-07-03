@@ -263,7 +263,7 @@ static void read_bno055_and_filter(unsigned long nowMs) {
 void sendPacketCallback(const LoRaPacket& packet) {
     uint8_t buf[RH_RF95_MAX_MESSAGE_LEN];
     int len = packetHandler.serializePacket(packet, buf, sizeof(buf));
-    delay(random(30, 150));
+    delay(random(20, 80));
     if (len > 0) {
         rf95.send(buf, len);
         rf95.waitPacketSent();
@@ -459,3 +459,4 @@ void loop() {
     
     delay(5);
 }
+

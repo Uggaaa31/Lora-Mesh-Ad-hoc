@@ -8,6 +8,7 @@
 static const WiFiProfile WIFI_PROFILES[] = {
     {"UGGA LAPTOP", "asalole11"},
     {"AIS LT 2_2.4G", "1122334455"},
+    {"PNUP HOTSPOT", ""},
     {"Ugga", "asalole11"}
 };
 
