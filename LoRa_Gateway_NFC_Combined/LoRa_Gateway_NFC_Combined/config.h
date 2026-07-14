@@ -62,7 +62,7 @@ struct WiFiProfile {
 // ================================================================
 #define ROUTE_TIMEOUT          60000  // 60 detik - route expiration time
 #define RREQ_TIMEOUT           2500   // 2.5 detik - timeout untuk RREQ retry (dioptimasi untuk mesh)
-#define RREQ_RETRIES           5     // Jumlah retry untuk RREQ
+#define RREQ_RETRIES           5      // Jumlah retry untuk RREQ
 #define HELLO_INTERVAL         30000  // 30 detik - periodic hello message (dikurangi untuk anti-kolisi)
 #define MAX_HOP_COUNT          10     // Maximum hop count
 #define ROUTE_CLEANUP_INTERVAL 60000  // 60 detik - garbage collection interval
@@ -82,6 +82,7 @@ struct WiFiProfile {
 #define PKT_TYPE_VEHICLE_TELEMETRY 0x09 // Legacy payload compatibility
 #define PKT_TYPE_DIAGNOSTIC         0x0A // Route discovery diagnostic (Node -> Gateway)
 #define PKT_TYPE_START_TEST         0x0B // Start test command (Gateway -> Nodes, broadcast)
+#define PKT_TYPE_TIMESYNC           0x0C // Time sync packet
 
 // ================================================================
 // DATA COLLECTION PARAMETERS
@@ -90,17 +91,18 @@ struct WiFiProfile {
 // ================================================================
 #define DATA_SEND_INTERVAL  3000     // 3 detik - interval kirim sensor (harus sama dengan Node)
 #define GPS_UPDATE_INTERVAL 100      // 100 ms - Referensi (harus sama dengan Node)
+#define IMU_UPDATE_INTERVAL 100      // 100 ms - Update sensor IMU
 #define DATA_ACK_ENABLE     true     // true = aktifkan ACK data + retry terbatas
 #define DATA_ACK_TIMEOUT_MS 2500     // Fallback timeout ACK (ms) bila SF bukan 7/9/12
 #define DATA_ACK_MAX_RETRIES 1       // Fallback retry maksimum bila SF bukan 7/9/12
 
 // Tuning ACK khusus SF untuk trade-off delay vs PDR
 #define DATA_ACK_TIMEOUT_SF7_MS   1000
-#define DATA_ACK_TIMEOUT_SF9_MS   1000
+#define DATA_ACK_TIMEOUT_SF9_MS   3000
 #define DATA_ACK_TIMEOUT_SF12_MS  7000
 
 #define DATA_ACK_MAX_RETRIES_SF7  1
-#define DATA_ACK_MAX_RETRIES_SF9  1
+#define DATA_ACK_MAX_RETRIES_SF9  2
 #define DATA_ACK_MAX_RETRIES_SF12 1
 #define OBSERVATION_PERIOD_MS            300000UL
 #define DEFAULT_NODE_SEND_INTERVAL_MS    3000UL

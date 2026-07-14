@@ -8,8 +8,8 @@
 // ================================================================
 // KONFIGURASI NODE - Ganti untuk setiap unit hardware
 // ================================================================
-#define NODE_ID   1
-#define NODE_NAME "TRK-001"
+#define NODE_ID   3
+#define NODE_NAME "TRK-003"
 
 // ================================================================
 // RUNTIME CONFIG - diisi dari NVRAM atau default config.h

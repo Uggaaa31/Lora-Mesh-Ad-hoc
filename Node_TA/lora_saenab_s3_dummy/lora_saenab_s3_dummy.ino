@@ -24,10 +24,10 @@ extern "C" {
 // ================================================================
 // WIFI & MQTT SETTINGS (PREFIX lora/ ADDED)
 // ================================================================
-const char* WIFI_SSID = "hmm";
-const char* WIFI_PASS = "12345678";
+const char* MY_WIFI_SSID = "hmm";
+const char* MY_WIFI_PASS = "12345678";
+const char* NODE_NAME    = "NODE_DUMMY"; // Added missing NODE_NAME
 
-static const char* MQTT_URI    = "wss://mqtt.aistrack.site:443/";
 static const char* TOPIC_IMU    = "lora/fms/fatigue_detection/imu";
 static const char* TOPIC_STATUS = "lora/fms/fatigue_detection/vision";
 static const char* TOPIC_BUZZER = "lora/fms/fatigue_detection/buzzer";
@@ -174,7 +174,7 @@ static void connect_wifi() {
     WiFi.mode(WIFI_STA);
     WiFi.disconnect(true);
     delay(100);
-    WiFi.begin(WIFI_SSID, WIFI_PASS);
+    WiFi.begin(MY_WIFI_SSID, MY_WIFI_PASS);
     WiFi.setTxPower(WIFI_POWER_8_5dBm);
     Serial.print("Connecting WiFi");
     unsigned long t0 = millis();

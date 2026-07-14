@@ -15,6 +15,12 @@
 #include "AODV_Routing.h"
 #include "WebConfig.h"
 
+#define ACCEL_DEADBAND 0.1f
+#define MAX_ACCEL_USED 2.0f
+#define NODE_NAME "TRK-005"
+#define BUZZER_PIN 3
+#define STATUS_PRINT_INTERVAL_MS 60000
+
 LoRaRuntimeCfg runtimeCfg;
 RH_RF95 rf95(LORA_CS_PIN, LORA_DIO0_PIN);
 AODVRouting aodv(NODE_ID);

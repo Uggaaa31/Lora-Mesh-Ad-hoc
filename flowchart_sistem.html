@@ -1,0 +1,283 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8">
+<title>Flowchart Sistem LoRa Mesh Ad Hoc</title>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap');
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Inter', sans-serif; background: #f0f4f8; padding: 20px; }
+  h1 { text-align: center; font-size: 18px; font-weight: 700; color: #1a202c; margin-bottom: 4px; }
+  .subtitle { text-align: center; font-size: 11px; color: #64748b; margin-bottom: 14px; }
+
+  .legend-bar {
+    display: flex; flex-wrap: wrap; justify-content: center; gap: 14px;
+    background: white; border-radius: 10px; padding: 10px 16px;
+    box-shadow: 0 2px 10px rgba(0,0,0,0.06); margin-bottom: 14px;
+    font-size: 11px; color: #334155;
+  }
+  .leg { display: flex; align-items: center; gap: 6px; font-weight: 600; }
+  .leg svg { flex-shrink: 0; }
+
+  .tabs { display: flex; justify-content: center; gap: 8px; margin-bottom: 14px; }
+  .tab { padding: 8px 22px; border-radius: 24px; border: 2px solid #e2e8f0; background: white; cursor: pointer; font-size: 12px; font-weight: 700; color: #4a5568; transition: all 0.15s; }
+  .tab.active-node    { background: #2563eb; border-color: #2563eb; color: white; }
+  .tab.active-gateway { background: #059669; border-color: #059669; color: white; }
+  .tab.active-server  { background: #7c3aed; border-color: #7c3aed; color: white; }
+
+  .btn-print { display: block; margin: 0 auto 14px; padding: 8px 24px; background: #1e293b; color: white; border: none; border-radius: 20px; font-size: 12px; font-weight: 600; cursor: pointer; }
+  .btn-print:hover { background: #334155; }
+
+  .tab-content { display: none; }
+  .card { background: white; border-radius: 14px; padding: 20px 16px; box-shadow: 0 4px 20px rgba(0,0,0,0.08); max-width: 600px; margin: 0 auto; }
+  .card-title { font-size: 13px; font-weight: 700; color: #334155; text-align: center; margin-bottom: 14px; padding-bottom: 10px; border-bottom: 2px solid #e2e8f0; }
+  .mermaid { display: flex; justify-content: center; }
+  #loading { text-align: center; padding: 50px; color: #64748b; font-size: 14px; }
+
+  @media print {
+    body { background: white; padding: 0; }
+    .tabs, .btn-print, #loading, h1, .subtitle, .legend-bar { display: none !important; }
+    .tab-content { display: block !important; }
+    .card { box-shadow: none; border: none; padding: 0; max-width: 100%; }
+  }
+</style>
+</head>
+<body>
+
+<h1>Flowchart Sistem LoRa Mesh Ad Hoc</h1>
+<p class="subtitle">Menggunakan simbol flowchart standar sesuai konvensi baku</p>
+
+<!-- LEGEND BAR -->
+<div class="legend-bar">
+  <div class="leg">
+    <svg width="38" height="22"><rect x="1" y="1" width="36" height="20" rx="10" ry="10" fill="none" stroke="#1e293b" stroke-width="2"/></svg>
+    Terminal
+  </div>
+  <div class="leg">
+    <svg width="38" height="22"><rect x="1" y="1" width="36" height="20" fill="none" stroke="#3b82f6" stroke-width="2"/></svg>
+    Proses
+  </div>
+  <div class="leg">
+    <svg width="30" height="28"><polygon points="15,1 29,14 15,27 1,14" fill="none" stroke="#d97706" stroke-width="2"/></svg>
+    Keputusan
+  </div>
+</div>
+
+<div class="tabs">
+  <div class="tab active-node"    onclick="showTab('node',this)">&#128225; Flowchart Node</div>
+  <div class="tab"                onclick="showTab('gateway',this)">&#127760; Flowchart Gateway</div>
+  <div class="tab"                onclick="showTab('server',this)">&#9729;&#65039; Flowchart Server</div>
+</div>
+<button class="btn-print" onclick="window.print()">&#128438; Cetak / Simpan PDF</button>
+
+<div id="loading">&#9203; Memuat diagram...</div>
+
+<!-- ============ NODE ============ -->
+<div id="tab-node" class="tab-content">
+  <div class="card">
+    <div class="card-title">Gambar 3.X &nbsp;|&nbsp; Flowchart Sistem Node</div>
+    <pre class="mermaid">
+%%{init:{'theme':'base','themeVariables':{'primaryColor':'#eff6ff','primaryBorderColor':'#3b82f6','primaryTextColor':'#1e3a8a','lineColor':'#475569','edgeLabelBackground':'#fff','fontFamily':'Inter,sans-serif','fontSize':'13px'}}}%%
+flowchart TD
+    NS(["MULAI"]) --> NI1["Inisialisasi LoRa RFM95W"]
+    NI1 --> NI2["Inisialisasi AODV Routing"]
+    NI2 --> NI3["Inisialisasi WiFi AP"]
+    NI3 --> NI4["Inisialisasi Sensor Dummy GPS, IMU"]
+    
+    NI4 --> NL1["Perbarui Data Sensor"]
+
+    NL1 --> ND0{"Ada Paket\nMasuk?"}
+    ND0 -- Ya --> DP1{"Paket\nTransit?"}
+    DP1 -- Ya --> RL1["Relay ke Node Berikutnya"]
+    RL1 --> NL3
+    DP1 -- Tidak --> PR1["Proses Paket Lokal"]
+    PR1 --> NL3
+    ND0 -- Tidak --> NL3["Proses ACK Timeout"]
+
+    NL3 --> ND1{"Timer Kirim\nAktif?"}
+    ND1 -- Tidak --> CEK_MATI{"Matikan\nPerangkat?"}
+    ND1 -- Ya --> ND2{"ACK Masih\nPending?"}
+    ND2 -- Ya --> CEK_MATI
+    ND2 -- Tidak --> ND3{"Ada Rute ke\nGateway?"}
+    ND3 -- Tidak --> NR1["Kirim RREQ"]
+    NR1 --> CEK_MATI
+    ND3 -- Ya --> NR2["Kirim Paket Data"]
+    NR2 --> NR3["Tunggu ACK"]
+    NR3 --> CEK_MATI
+
+    CEK_MATI -- Ya --> NE(["SELESAI"])
+    CEK_MATI -- Tidak --> NL1
+
+    style NS  fill:#1e293b,color:#fff,stroke:#1e293b
+    style NE  fill:#1e293b,color:#fff,stroke:#1e293b
+    style NI1 fill:#eff6ff,stroke:#3b82f6,color:#1e3a8a
+    style NI2 fill:#eff6ff,stroke:#3b82f6,color:#1e3a8a
+    style NI3 fill:#eff6ff,stroke:#3b82f6,color:#1e3a8a
+    style NI4 fill:#eff6ff,stroke:#3b82f6,color:#1e3a8a
+    style CEK_MATI fill:#fef9c3,stroke:#d97706,color:#78350f
+    style NL1 fill:#f0fdfa,stroke:#14b8a6,color:#134e4a
+    style NL3 fill:#fff7ed,stroke:#f97316,color:#7c2d12
+    style ND0 fill:#fef9c3,stroke:#d97706,color:#78350f
+    style DP1 fill:#fef9c3,stroke:#d97706,color:#78350f
+    style ND1 fill:#fef9c3,stroke:#d97706,color:#78350f
+    style ND2 fill:#fef9c3,stroke:#d97706,color:#78350f
+    style ND3 fill:#fef9c3,stroke:#d97706,color:#78350f
+    style RL1 fill:#eff6ff,stroke:#3b82f6,color:#1e3a8a
+    style PR1 fill:#f0fdfa,stroke:#14b8a6,color:#134e4a
+    style NR1 fill:#fef2f2,stroke:#ef4444,color:#7f1d1d
+    style NR2 fill:#f0fdf4,stroke:#22c55e,color:#14532d
+    style NR3 fill:#f0fdf4,stroke:#22c55e,color:#14532d
+    </pre>
+  </div>
+</div>
+
+<!-- ============ GATEWAY ============ -->
+<div id="tab-gateway" class="tab-content">
+  <div class="card">
+    <div class="card-title">Gambar 3.Y &nbsp;|&nbsp; Flowchart Sistem Gateway</div>
+    <pre class="mermaid">
+%%{init:{'theme':'base','themeVariables':{'primaryColor':'#f0fdf4','primaryBorderColor':'#22c55e','primaryTextColor':'#14532d','lineColor':'#475569','edgeLabelBackground':'#fff','fontFamily':'Inter,sans-serif','fontSize':'13px'}}}%%
+flowchart TD
+    GS(["MULAI"]) --> GI1["Inisialisasi LoRa RFM95W"]
+    GI1 --> GI2["Inisialisasi AODV Routing"]
+    GI2 --> GI3["Koneksi WiFi"]
+    GI3 --> GI4["Koneksi MQTT Broker"]
+    GI4 --> GI5["Sinkronisasi NTP"]
+    
+    GI5 --> GL1["Periksa Koneksi WiFi"]
+
+    GL1 --> GL2["Kirim TimeSync ke Node"]
+    GL2 --> GL3["Terima Paket LoRa"]
+    GL3 --> GD1{"Ada Paket\nDiterima?"}
+
+    GD1 -- Tidak --> CEK_MATI{"Matikan\nPerangkat?"}
+    GD1 -- Ya --> GD2{"Paket RREQ?"}
+
+    GD2 -- Ya --> GG1["Kirim RREP ke Node"]
+    GG1 --> CEK_MATI
+    GD2 -- Tidak --> GD3{"Paket Data\nSensor?"}
+
+    GD3 -- Tidak --> GD4{"Paket RERR?"}
+    GD3 -- Ya --> GG2["Validasi Duplikat"]
+    GG2 --> GG3["Kirim ACK ke Node"]
+    GG3 --> GG4["Publikasi via MQTT"]
+    GG4 --> CEK_MATI
+
+    GD4 -- Ya --> GG5["Hapus Rute AODV"]
+    GG5 --> CEK_MATI
+    GD4 -- Tidak --> CEK_MATI
+
+    CEK_MATI -- Ya --> GE(["SELESAI"])
+    CEK_MATI -- Tidak --> GL1
+
+    style GS  fill:#064e3b,color:#fff,stroke:#064e3b
+    style GE  fill:#064e3b,color:#fff,stroke:#064e3b
+    style GI1 fill:#f0fdf4,stroke:#22c55e,color:#14532d
+    style GI2 fill:#f0fdf4,stroke:#22c55e,color:#14532d
+    style GI3 fill:#f0fdf4,stroke:#22c55e,color:#14532d
+    style GI4 fill:#f0fdf4,stroke:#22c55e,color:#14532d
+    style GI5 fill:#f0fdf4,stroke:#22c55e,color:#14532d
+    style CEK_MATI fill:#fef9c3,stroke:#d97706,color:#78350f
+    style GL1 fill:#f0fdfa,stroke:#14b8a6,color:#134e4a
+    style GL2 fill:#f0fdfa,stroke:#14b8a6,color:#134e4a
+    style GL3 fill:#f0fdfa,stroke:#14b8a6,color:#134e4a
+    style GD1 fill:#fef9c3,stroke:#d97706,color:#78350f
+    style GD2 fill:#fef9c3,stroke:#d97706,color:#78350f
+    style GD3 fill:#fef9c3,stroke:#d97706,color:#78350f
+    style GD4 fill:#fef9c3,stroke:#d97706,color:#78350f
+    style GG1 fill:#f0fdf4,stroke:#22c55e,color:#14532d
+    style GG2 fill:#f0fdf4,stroke:#22c55e,color:#14532d
+    style GG3 fill:#f0fdfa,stroke:#14b8a6,color:#134e4a
+    style GG4 fill:#dcfce7,stroke:#16a34a,color:#14532d
+    style GG5 fill:#fef2f2,stroke:#ef4444,color:#7f1d1d
+    </pre>
+  </div>
+</div>
+
+<!-- ============ SERVER ============ -->
+<div id="tab-server" class="tab-content">
+  <div class="card">
+    <div class="card-title">Gambar 3.Z &nbsp;|&nbsp; Flowchart Sistem Server</div>
+    <pre class="mermaid">
+%%{init:{'theme':'base','themeVariables':{'primaryColor':'#faf5ff','primaryBorderColor':'#a855f7','primaryTextColor':'#4c1d95','lineColor':'#475569','edgeLabelBackground':'#fff','fontFamily':'Inter,sans-serif','fontSize':'13px'}}}%%
+flowchart TD
+    VS(["MULAI"]) --> VI1["Jalankan Server Node.js"]
+    VI1 --> VI2["Koneksi ke MQTT Broker"]
+    VI2 --> VI3["Subscribe Topic LoRa"]
+    
+    VI3 --> VL1["Tunggu Pesan MQTT"]
+
+    VL1 --> VD1{"Pesan\nDiterima?"}
+
+    VD1 -- Tidak --> CEK_MATI{"Matikan\nServer?"}
+    VD1 -- Ya --> VP1["Parse JSON Payload"]
+
+    VP1 --> VD2{"Data\nDuplikat?"}
+    VD2 -- Ya --> CEK_MATI
+    VD2 -- Tidak --> VP2["Simpan ke Database"]
+
+    VP2 --> VP3["Hitung Metrik QoS"]
+    VP3 --> VP4["Kirim ke Browser via WebSocket"]
+    VP4 --> VP5["Tampilkan di Dashboard"]
+    VP5 --> CEK_MATI
+
+    CEK_MATI -- Ya --> VE(["SELESAI"])
+    CEK_MATI -- Tidak --> VL1
+
+    style VS  fill:#3b0764,color:#fff,stroke:#3b0764
+    style VE  fill:#3b0764,color:#fff,stroke:#3b0764
+    style VI1 fill:#faf5ff,stroke:#a855f7,color:#4c1d95
+    style VI2 fill:#faf5ff,stroke:#a855f7,color:#4c1d95
+    style VI3 fill:#faf5ff,stroke:#a855f7,color:#4c1d95
+    style CEK_MATI fill:#fef9c3,stroke:#d97706,color:#78350f
+    style VL1 fill:#f3e8ff,stroke:#9333ea,color:#4c1d95
+    style VD1 fill:#fef9c3,stroke:#d97706,color:#78350f
+    style VD2 fill:#fef9c3,stroke:#d97706,color:#78350f
+    style VP1 fill:#faf5ff,stroke:#a855f7,color:#4c1d95
+    style VP2 fill:#faf5ff,stroke:#a855f7,color:#4c1d95
+    style VP3 fill:#faf5ff,stroke:#a855f7,color:#4c1d95
+    style VP4 fill:#ede9fe,stroke:#7c3aed,color:#4c1d95
+    style VP5 fill:#ede9fe,stroke:#7c3aed,color:#4c1d95
+    </pre>
+  </div>
+</div>
+
+<script>
+mermaid.initialize({
+  startOnLoad: false,
+  securityLevel: 'loose',
+  flowchart: { curve: 'linear', padding: 20, htmlLabels: true }
+});
+
+document.addEventListener('DOMContentLoaded', function () {
+  var all = document.querySelectorAll('.tab-content');
+  all.forEach(function (el) {
+    el.style.display = 'block';
+    el.style.opacity = '0';
+    el.style.pointerEvents = 'none';
+  });
+  mermaid.run({ querySelector: 'pre.mermaid' })
+    .then(function () {
+      document.getElementById('loading').style.display = 'none';
+      all.forEach(function (el) {
+        el.style.display = 'none';
+        el.style.opacity = '';
+        el.style.pointerEvents = '';
+      });
+      document.getElementById('tab-node').style.display = 'block';
+    })
+    .catch(function () {
+      document.getElementById('loading').textContent = 'Gagal memuat. Pastikan internet aktif, lalu refresh.';
+    });
+});
+
+function showTab(name, el) {
+  document.querySelectorAll('.tab-content').forEach(function (t) { t.style.display = 'none'; });
+  document.querySelectorAll('.tab').forEach(function (t) { t.className = 'tab'; });
+  document.getElementById('tab-' + name).style.display = 'block';
+  el.className = 'tab active-' + name;
+}
+</script>
+</body>
+</html>
