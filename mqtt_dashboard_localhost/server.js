@@ -815,6 +815,12 @@ function computeSummaryLatencyAvg(summary) {
   return sum / count;
 }
 
+function formatDelayToS(ms) {
+  if (ms === null || ms === undefined || ms === "") return "";
+  const num = Number(ms);
+  return Number.isFinite(num) ? (num / 1000).toFixed(2) : "";
+}
+
 function allMqttEventsToCsv(allEvents) {
   const stickyEvents = applyStickyRouteStamps(allEvents);
   const header = [
@@ -879,7 +885,7 @@ function allMqttEventsToCsv(allEvents) {
         trial.targetDurationMs ? Math.max(1, Math.round(Number(trial.targetDurationMs) / 60000)) : "",
         hopDisplay,
         routePath,
-        event.delayMs ?? event.latencyMs ?? "",
+        formatDelayToS(event.delayMs ?? event.latencyMs),
         rreqTime,
         rrepTime,
         event.discoveryMs ?? "",
@@ -973,7 +979,7 @@ function scenario4ToCsv(summaries) {
           (summary.durationMs / 1000).toFixed(2),
           node.pdr !== undefined ? Number(node.pdr).toFixed(2) : "",
           node.plr !== undefined ? Number(node.plr).toFixed(2) : "",
-          node.latencyAvg !== null && node.latencyAvg !== undefined ? Number(node.latencyAvg).toFixed(2) : "",
+          formatDelayToS(node.latencyAvg),
           node.hopAvg !== null && node.hopAvg !== undefined ? Number(node.hopAvg).toFixed(2) : "",
           node.rssiAvg !== null && node.rssiAvg !== undefined ? Number(node.rssiAvg).toFixed(2) : "",
           node.snrAvg !== null && node.snrAvg !== undefined ? Number(node.snrAvg).toFixed(2) : "",
@@ -1028,7 +1034,7 @@ function scenario3ToCsv(summaries) {
           node.received,
           node.pdr.toFixed(2),
           node.plr.toFixed(2),
-          node.latencyAvg !== null ? node.latencyAvg.toFixed(2) : ""
+          formatDelayToS(node.latencyAvg)
         ])
       );
     }
@@ -1167,7 +1173,7 @@ function packetEventsToCsv(events) {
         event.seq ?? "",
         hopDisplay,
         routePath,
-        event.delayMs ?? event.latencyMs ?? "",
+        formatDelayToS(event.delayMs ?? event.latencyMs),
         JSON.stringify(event.payload || {})
       ])
     );

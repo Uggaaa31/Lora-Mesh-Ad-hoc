@@ -441,6 +441,11 @@ void setup() {
 
     // AODV Init
     aodv.begin();
+    
+    // Dynamic RREQ Timeout
+    if (runtimeCfg.sf == 12) aodv.rreqTimeoutMs = 8000;
+    else if (runtimeCfg.sf == 9) aodv.rreqTimeoutMs = 4000;
+    else aodv.rreqTimeoutMs = 2500;
     aodv.onSendPacket = sendPacketCallback;
     aodv.onDiagnosticReady = sendDiagnosticCallback;
     aodv.epochOffsetPtr = &epochOffsetMsLow32;

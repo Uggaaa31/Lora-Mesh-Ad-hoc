@@ -110,6 +110,7 @@ public:
     void handleHello(const LoRaPacket& packet);
     
     // Hello messages
+
     void sendHelloMessage();
     
     // Utility
@@ -119,6 +120,9 @@ public:
     // Statistik Route Discovery (Skenario 2 Skripsi)
     uint16_t routeDiscoverySuccess;  // Rute berhasil ditemukan
     uint16_t routeDiscoveryFail;     // Rute gagal (max retries habis)
+
+    // Dynamic RREQ Timeout
+    uint32_t rreqTimeoutMs = 2500;
 
     // Callbacks - set these to handle packet transmission
     void (*onSendPacket)(const LoRaPacket& packet) = nullptr;

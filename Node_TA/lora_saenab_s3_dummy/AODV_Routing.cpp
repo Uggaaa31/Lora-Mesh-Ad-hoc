@@ -330,7 +330,7 @@ void AODVRouting::retryRREQ() {
             }
             
             // Check timeout
-            if (now - pendingRREQs[i].timestamp > RREQ_TIMEOUT) {
+            if (now - pendingRREQs[i].timestamp > rreqTimeoutMs) {
                 if (pendingRREQs[i].retryCount < RREQ_RETRIES) {
                     pendingRREQs[i].retryCount++;
                     pendingRREQs[i].timestamp = now;

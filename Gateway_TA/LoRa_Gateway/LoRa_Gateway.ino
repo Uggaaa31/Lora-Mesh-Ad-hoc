@@ -193,6 +193,11 @@ void setup() {
 
     initLoRa();
     aodv.begin();
+    
+    // Dynamic RREQ Timeout
+    if (gwRuntimeCfg.sf == 12) aodv.rreqTimeoutMs = 8000;
+    else if (gwRuntimeCfg.sf == 9) aodv.rreqTimeoutMs = 4000;
+    else aodv.rreqTimeoutMs = 2500;
     aodv.onSendPacket = sendPacketCallback;
 
     xTaskCreatePinnedToCore(TaskLoRa, "LoRaTask", 10000, nullptr, 1, &LoRaTaskHandle, 1);
