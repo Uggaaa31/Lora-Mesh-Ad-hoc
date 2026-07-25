@@ -384,6 +384,11 @@ void AODVRouting::handleRREQ(const LoRaPacket& packet) {
     
     Serial.printf("RREQ received: orig=%d, dest=%d, rreqID=%u, hops=%d\n", 
                  rreq.originatorID, rreq.destinationID, rreq.rreqID, rreq.hopCount);
+                 
+    // PENCEGAHAN LOOPING MESH: Jangan proses RREQ milik kita sendiri!
+    if (rreq.originatorID == myNodeID) {
+        return;
+    }
     
     // Check if already processed
     if (!shouldProcessRREQ(rreq.originatorID, rreq.rreqID)) {

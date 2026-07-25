@@ -8,8 +8,8 @@
 // ================================================================
 // KONFIGURASI NODE - Ganti untuk setiap unit hardware
 // ================================================================
-#define NODE_ID   2
-#define NODE_NAME "TRK-002"
+#define NODE_ID   3
+#define NODE_NAME "TRK-003"
 
 // ================================================================
 // RUNTIME CONFIG - diisi dari NVRAM atau default config.h
@@ -569,8 +569,8 @@ void sendPacketCallback(const LoRaPacket& packet) {
         // PENCEGAHAN MACET: Ganti rf95.waitPacketSent() dengan Timeout Manual!
         uint32_t startWait = millis();
         while (rf95.mode() == RHGenericDriver::RHModeTx) {
-            // Jika lebih dari 2 detik (2000 ms) LoRa tidak membalas "Selesai"
-            if (millis() - startWait > 2000) { 
+            // Jika lebih dari 8 detik (8000 ms) LoRa tidak membalas "Selesai"
+            if (millis() - startWait > 8000) { 
                 Serial.println("[ERROR] LORA TX TIMEOUT! (Modul Radio Crash/Tegangan Drop/DIO0 Lepas)");
                 rf95.setModeIdle(); // Paksa reset status agar ESP32 tidak macet
                 break;

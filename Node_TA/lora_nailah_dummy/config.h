@@ -25,7 +25,7 @@ struct WiFiProfile {
 // ================================================================
 #define LORA_FREQUENCY         921.0   // MHz - Sesuai regulasi Indonesia (Kominfo)
 #define LORA_BANDWIDTH         125E3   // 125 kHz
-#define LORA_SPREADING_FACTOR  12       // SF9
+#define LORA_SPREADING_FACTOR  9       // SF9
 #define LORA_CODING_RATE       5       // 4/5 (tetap untuk semua skenario)
 #define LORA_TX_POWER          20      // dBm (RFO path, max 15)
 #define LORA_USE_RFO           false    // true = RFO, false = PA_BOOST
@@ -47,7 +47,7 @@ struct WiFiProfile {
 // NETWORK CONFIGURATION
 // ================================================================
 #define GATEWAY_ID          0
-#define NODE_ID             5
+#define NODE_ID             1
 #define BROADCAST_ADDR      255
 #define MAX_NODES           10
 #define MAX_PACKET_SIZE     250      // Maximum LoRa packet size

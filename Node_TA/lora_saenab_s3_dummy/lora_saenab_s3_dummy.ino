@@ -26,7 +26,7 @@ extern "C" {
 // ================================================================
 const char* MY_WIFI_SSID = "hmm";
 const char* MY_WIFI_PASS = "12345678";
-const char* NODE_NAME    = "NODE_DUMMY"; // Added missing NODE_NAME
+const char* NODE_NAME    = "SAENAB-003"; // Added missing NODE_NAME
 
 static const char* TOPIC_IMU    = "lora/fms/fatigue_detection/imu";
 static const char* TOPIC_STATUS = "lora/fms/fatigue_detection/vision";
